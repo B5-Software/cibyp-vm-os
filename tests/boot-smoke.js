@@ -373,7 +373,11 @@ async function main() {
       throw new Error(`[${roundLabel}] SSH 未就绪（${ready.reason}）`);
     }
     const auth = await sshWaitFor(key, sshPort, knownHosts, 'true', 180000, 3000);
-    if (auth.code !== 0) throw new Error(`[${roundLabel}] SSH 认证失败: ${auth.err}`);
+    if (auth.code !== 0) {
+      // 认证失败通常意味着 cloud-init 没把密钥装进去 —— 串口里有 cloud-init 的报错
+      log(`[${roundLabel}] 串口尾部（排障用）：\n${vm.serialBuf.slice(-3000)}`);
+      throw new Error(`[${roundLabel}] SSH 认证失败: ${auth.err}`);
+    }
     log(`[${roundLabel}] SSH 就绪（banner ${ready.ms}ms）`);
     return { sshPort, ready, t0 };
   }
