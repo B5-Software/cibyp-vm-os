@@ -187,7 +187,8 @@ class Vm {
       '-append', cmdline,
       '-drive', `file=${overlay},if=virtio,format=qcow2,cache=writeback,discard=unmap`,
       '-netdev', `user,id=n0,hostfwd=tcp:127.0.0.1:${sshPort}-:22`,
-      '-device', 'virtio-net-pci,netdev=n0',
+      // romfile= 关闭 option ROM：部分发行版不带 efi-virtio.rom（缺失会直接启动失败）
+      '-device', 'virtio-net-pci,netdev=n0,romfile=',
       '-chardev', `socket,id=ser0,host=127.0.0.1,port=${serialPort},server=on,wait=off`,
       '-serial', 'chardev:ser0',
       '-smbios', `type=1,serial=ds=nocloud-net;s=http://10.0.2.2:${ciPort}/`,

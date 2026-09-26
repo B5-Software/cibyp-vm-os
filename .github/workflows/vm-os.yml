@@ -75,8 +75,10 @@ jobs:
           sudo apt-get update -qq
           # 注意：arm64 的 noble 源里没有 debos 包（E: no installation candidate），
           # 因此 debootstrap/debos 的运行时依赖必须显式安装。
-          sudo apt-get install -y --no-install-recommends \
-            debootstrap e2fsprogs util-linux zstd qemu-utils systemd-container qemu-system-data ${{ matrix.qemuPkg }} || true
+          sudo apt-get install -y \
+            debootstrap e2fsprogs util-linux zstd qemu-utils systemd-container ${{ matrix.qemuPkg }} || true
+          # 自检：option ROM 是否随包提供（缺失时 QEMU 可能直接启动失败；我们已用 romfile= 规避）
+          ls -l /usr/share/qemu/efi-virtio.rom 2>/dev/null || echo "::notice::未找到 efi-virtio.rom（已通过 romfile= 规避）"
           if sudo apt-get install -y --no-install-recommends debos; then
             echo "debos 来自 apt: $(command -v debos)"
           else
