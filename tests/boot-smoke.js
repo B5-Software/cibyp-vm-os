@@ -117,6 +117,38 @@ async function sshWaitFor(key, port, knownHosts, cmd, timeoutMs, intervalMs = 30
   return last || { code: -1, out: '', err: 'timeout' };
 }
 
+// ---------------------------------------------------------------- 加速器真实探测
+
+/**
+ * 加速器可用性硬探测：真实拉起一只空机器，存活且无致命签名才算可用。
+ * 背景：CI runner 的 QEMU 二进制"支持"kvm（-accel help 会列出），但 /dev/kvm 不可访问时
+ * 会立刻退出（exit 1、串口零输出）——只查列表会误判（实测踩坑）。
+ */
+function probeAccelReal(accel, arch) {
+  const args = ['-accel', accel, '-machine', QEMU_MACHINE[arch], '-display', 'none', '-nodefaults', '-m', '256'];
+  const cpu = cpuModelFor(accel);
+  if (cpu) args.push('-cpu', cpu);
+  const r = spawnSync(QEMU_BIN[arch], args, { timeout: 5000, encoding: 'utf8' });
+  const alive = !!r.error && /ETIMEDOUT|timed out/i.test(r.error.message || '');
+  const combined = ((r.stderr || '') + (r.stdout || '') + (r.error ? r.error.message : '')).trim();
+  const fatal = /WHPX: Unexpected VP exit code|Could not access KVM|KVM: not found|kvm_init_vcpu failed|hvf: failed|Permission denied|Operation not permitted/i.test(combined);
+  return { ok: alive && !fatal, detail: combined.split('\n').filter(Boolean).slice(0, 2).join(' | ').slice(0, 200) };
+}
+
+/** 按平台优先级挑选真实可用的加速器 */
+function pickAccel(arch) {
+  const list = spawnSync(QEMU_BIN[arch], ['-accel', 'help'], { encoding: 'utf8', timeout: 20000 });
+  const text = ((list.stdout || '') + (list.stderr || '')).trim();
+  const prefer = process.platform === 'linux' ? ['kvm', 'tcg'] : process.platform === 'darwin' ? ['hvf', 'tcg'] : ['whpx', 'tcg'];
+  for (const accel of prefer) {
+    if (!text.includes(accel)) { console.log('  [accel] ' + accel + ' 不在二进制支持列表'); continue; }
+    const r = probeAccelReal(accel, arch);
+    console.log('  [accel] ' + accel + ' 真实探测: ' + (r.ok ? '可用' : '不可用' + (r.detail ? '（' + r.detail + '）' : '')));
+    if (r.ok) return { accel, detail: r.detail };
+  }
+  return { accel: 'tcg', detail: '无硬件加速可用，回退 TCG' };
+}
+
 // ---------------------------------------------------------------- QEMU 进程
 
 class Vm {
@@ -319,8 +351,9 @@ async function main() {
   };
 
   const vm = new Vm(opts, work);
-  const accel = vm.detectAccel();
-  log(`架构=${opts.arch} 变体=${opts.variant} 加速器=${accel.chosen}（可用: ${accel.list.join(', ')}）`);
+  const picked = pickAccel(opts.arch);
+  const accel = { chosen: picked.accel, list: [picked.accel], detail: picked.detail };
+  log(`架构=${opts.arch} 变体=${opts.variant} 加速器=${accel.chosen}（${picked.detail || ''}）`);
 
   /** 启动一轮：返回 ssh 端口与就绪信息 */
   async function boot(roundLabel, { recreateOverlay = false } = {}) {
@@ -333,7 +366,9 @@ async function main() {
     vm.start({ accel: accel.chosen, sshPort, serialPort, ciPort, overlay });
     const ready = await vm.waitSshReady(sshPort, Math.min(opts.timeout * 1000, 600000));
     if (!ready.ok) {
-      log(`[${roundLabel}] 启动失败：${ready.reason}；串口尾部：\n${vm.serialBuf.slice(-2500)}`);
+      const qemuLogTail = (() => { try { return fs.readFileSync(vm.qemuLog, 'utf8').slice(-1500); } catch { return ''; } })();
+      log(`[${roundLabel}] 启动失败：${ready.reason}；串口尾部：\n${vm.serialBuf.slice(-2000)}`);
+      if (qemuLogTail) log(`[${roundLabel}] qemu.log 尾部：\n${qemuLogTail}`);
       throw new Error(`[${roundLabel}] SSH 未就绪（${ready.reason}）`);
     }
     const auth = await sshWaitFor(key, sshPort, knownHosts, 'true', 180000, 3000);
