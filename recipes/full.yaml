@@ -119,6 +119,29 @@ actions:
       - libwayland-client0
       - libxshmfence1
 
+  # 图形栈（与 desktop 变体一致）：用户预期 full 也能开 VM 桌面
+  - action: apt
+    packages:
+      - xserver-xorg
+      - xserver-xorg-video-dummy
+      - xinit
+      - x11-utils
+      - x11vnc
+      - openbox
+      - xterm
+      - xdotool
+      - xauth
+      - dbus-x11
+      - at-spi2-core
+      - libgl1-mesa-dri
+      - mesa-utils
+      - chromium
+      - fonts-noto-cjk
+      - fonts-noto-color-emoji
+      - fonts-wqy-zenhei
+      - fonts-dejavu-core
+      - imagemagick
+
   - action: recipe
     recipe: tail.yaml
     variables:
