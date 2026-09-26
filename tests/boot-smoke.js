@@ -175,7 +175,8 @@ class Vm {
   start({ accel, sshPort, serialPort, ciPort, overlay }) {
     this.exit = null;      // 关键：新一轮启动必须清掉上一轮的退出状态
     this.serialBuf = '';
-    const cmdline = `root=LABEL=cibyp-root rw console=${GUEST_CONSOLE[this.opts.arch]},115200 net.ifnames=0 rootwait`;
+    // 内核命令行同时携带 cloud-init 种子（ARM virt 的 SMBIOS 不可靠：实测回退 DataSourceNone）
+    const cmdline = `root=LABEL=cibyp-root rw console=${GUEST_CONSOLE[this.opts.arch]},115200 net.ifnames=0 rootwait ds=nocloud-net;s=http://10.0.2.2:${ciPort}/`;
     const argv = [
       '-name', `vmos-smoke-${this.opts.variant}`,
       '-machine', QEMU_MACHINE[this.opts.arch],
