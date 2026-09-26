@@ -102,6 +102,17 @@ LC_ALL=
 EOF
 update-locale LANG=en_US.UTF-8 >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------- 强制 UTF-8（避免 guest 内 unzip/tar 把中文名写成乱码）
+cat > /etc/profile.d/00-cibyp-locale.sh <<'EOF'
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+EOF
+chmod 0644 /etc/profile.d/00-cibyp-locale.sh
+cat > /etc/environment <<'EOF'
+LANG=C.UTF-8
+LC_ALL=C.UTF-8
+EOF
+
 # ---------------------------------------------------------------- SSH
 install -d -m 0755 /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/10-cibyp.conf <<'EOF'
