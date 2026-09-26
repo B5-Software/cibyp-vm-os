@@ -76,7 +76,7 @@ jobs:
           # 注意：arm64 的 noble 源里没有 debos 包（E: no installation candidate），
           # 因此 debootstrap/debos 的运行时依赖必须显式安装。
           sudo apt-get install -y --no-install-recommends \
-            debootstrap e2fsprogs util-linux zstd qemu-utils systemd-container ${{ matrix.qemuPkg }} || true
+            debootstrap e2fsprogs util-linux zstd qemu-utils systemd-container qemu-system-data ${{ matrix.qemuPkg }} || true
           if sudo apt-get install -y --no-install-recommends debos; then
             echo "debos 来自 apt: $(command -v debos)"
           else

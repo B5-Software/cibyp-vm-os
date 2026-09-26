@@ -97,6 +97,11 @@ jobs:
           mkdir -p qemu-src/bin
           cp /usr/bin/qemu-system-x86_64 /usr/bin/qemu-system-aarch64 /usr/bin/qemu-system-xtensa /usr/bin/qemu-img qemu-src/bin/ 2>/dev/null || \
             cp /usr/bin/qemu-system-x86_64 /usr/bin/qemu-system-aarch64 /usr/bin/qemu-img qemu-src/bin/
+          # QEMU 的选项 ROM / 固件（efi-virtio.rom、bios-*.bin、pxe-* 等）在 /usr/share/qemu，
+          # 缺了会在 arm64 上直接失败：failed to find romfile "efi-virtio.rom"
+          mkdir -p qemu-src/share
+          cp -R /usr/share/qemu/. qemu-src/share/ 2>/dev/null || true
+          ls qemu-src/share | head -8
           ls -l qemu-src/bin
 
       - name: 获取 QEMU（macOS）
