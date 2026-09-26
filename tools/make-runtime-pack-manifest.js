@@ -57,7 +57,7 @@ function main() {
     if (!m) continue;
     const key = `${m[1]}-${m[2]}`;
     const file = path.join(args.dir, f);
-    const metaFile = path.join(args.dir, `.meta-${key}.json`);
+    const metaFile = [path.join(args.dir, `pack-meta-${key}.json`), path.join(args.dir, `.meta-${key}.json`)].find((p) => fs.existsSync(p)) || '';
     let meta = {};
     try { if (fs.existsSync(metaFile)) meta = JSON.parse(fs.readFileSync(metaFile, 'utf8')); } catch { /* ignore */ }
     manifest.packs[key] = {

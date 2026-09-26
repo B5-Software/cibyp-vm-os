@@ -121,7 +121,7 @@ jobs:
             --platform ${{ matrix.platform }} \
             --arch ${{ matrix.arch }} \
             --zip
-          cp dist/vm-pack/runtime-pack.json dist/.meta-${{ matrix.platform }}-${{ matrix.arch }}.json
+          cp dist/vm-pack/runtime-pack.json dist/pack-meta-${{ matrix.platform }}-${{ matrix.arch }}.json
           ls -lh dist
 
       - name: 上传产物
@@ -131,7 +131,7 @@ jobs:
           path: |
             dist/*.zip
             dist/*.sha256
-            dist/.meta-*.json
+            dist/pack-meta-*.json
           if-no-files-found: error
 
   publish:
