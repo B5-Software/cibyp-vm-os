@@ -676,7 +676,8 @@ class Toast(Gtk.Window):
 
 class ShellApp(Gtk.Application):
     def __init__(self):
-        super().__init__(application_id='com.b5software.cibyp.shell')
+        super().__init__(application_id='com.b5software.cibyp.shell',
+                         flags=Gio.ApplicationFlags.DEFAULT_FLAGS | Gio.ApplicationFlags.NON_UNIQUE)
         self.panel = None
         self.menu = None
         self.calendar = None

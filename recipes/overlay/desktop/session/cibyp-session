@@ -121,6 +121,15 @@ for out_name in $(swaymsg -t get_outputs 2>/dev/null | grep -o '"name": "[^"]*"'
 done
 
 start_shell() {
+  # 等 dbus 会话总线就绪（最多 3s）：应用注册 D-Bus 名称时若 bus 未稳定会干净退出
+  for _ in $(seq 1 30); do
+    if [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-send >/dev/null 2>&1; then
+      dbus-send --session --dest=org.freedesktop.DBus --type=method_call --print-reply / org.freedesktop.DBus.ListNames >/dev/null 2>&1 && break
+    else
+      break
+    fi
+    sleep 0.1
+  done
   # 用 python3 -u 启动（无缓冲）：应用若异常退出，退出前的输出一定能落到日志里；
   # 同时记录退出码，便于 CI 诊断直接定位
   ( python3 -u /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-desktop 退出 code=$?" >>"$LOG" ) &
