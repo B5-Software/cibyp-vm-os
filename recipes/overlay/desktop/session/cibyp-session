@@ -23,6 +23,11 @@ export MOZ_ENABLE_WAYLAND=1
 export _JAVA_AWT_WM_NONREPARENTING=1
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export GTK_A11Y="${GTK_A11Y:-none}"
+# 无 GPU/无 /dev/dri 的 VM：GTK4 的 GL/Vulkan 渲染器会初始化失败并让应用静默退出，
+# 强制软件渲染（Cairo）——自研外壳在 QEMU 内的关键依赖
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+export GDK_DISABLE="${GDK_DISABLE:-}"
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 # LD_PRELOAD 不在此处全局导出：sway/bash 不应被预加载 GTK 库；
 # 自研 GTK 应用（cibyp-shell/cibyp-desktop）由 cibypui.ensure_layer_shell_preload() 自行带环境重执行。
 export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
@@ -116,8 +121,9 @@ for out_name in $(swaymsg -t get_outputs 2>/dev/null | grep -o '"name": "[^"]*"'
 done
 
 start_shell() {
-  nohup /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1 &
-  nohup /usr/local/bin/cibyp-shell >>"$LOG" 2>&1 &
+  # 记录退出码：外壳若崩溃，下一轮 CI 诊断能直接看到原因与 code
+  ( /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-desktop 退出 code=$?" >>"$LOG" ) &
+  ( /usr/local/bin/cibyp-shell >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-shell 退出 code=$?" >>"$LOG" ) &
   log "外壳已启动：cibyp-desktop + cibyp-shell"
 }
 start_shell

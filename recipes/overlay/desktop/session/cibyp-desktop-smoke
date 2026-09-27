@@ -31,6 +31,8 @@ fail() { echo "  FAIL  $*"; FAIL=$((FAIL + 1)); }
 
 # 防御：外部若注入 LD_PRELOAD（会破坏 sway/bash），在本脚本内清掉
 unset LD_PRELOAD
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"   # 无 GPU 的 VM：GTK4 必须软件渲染
+export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 
 export WLR_BACKENDS="${WLR_BACKENDS:-headless}"
 export WLR_HEADLESS_OUTPUTS="${WLR_HEADLESS_OUTPUTS:-1}"
