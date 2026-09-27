@@ -132,7 +132,7 @@ sleep 1
 # 监督：外壳异常退出自动重启（最多 5 次），sway 退出则结束
 RESTART=0
 while kill -0 "$SWAY_PID" 2>/dev/null; do
-  if ! pgrep -f 'cibyp-shell' >/dev/null 2>&1 || ! pgrep -f 'cibyp-desktop' >/dev/null 2>&1; then
+  if ! pgrep -f '/usr/local/bin/cibyp-shell' >/dev/null 2>&1 || ! pgrep -f '/usr/local/bin/cibyp-desktop' >/dev/null 2>&1; then
     if [ "$RESTART" -ge 5 ]; then
       log "外壳重启次数过多，停止监督"
     else

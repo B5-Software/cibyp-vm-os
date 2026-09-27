@@ -480,6 +480,12 @@ def try_layer_shell(window, *, namespace=None, layer='top', anchors=('top', 'lef
     """安全初始化 layer-shell：任何失败都返回 False，让调用方回退为普通窗口。
     返回 True 表示已是 layer surface（后续 LayerShell 调用才有效）。"""
     try:
+        gi.require_version('Gtk4LayerShell', '1.0')
+        from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
+    except Exception as exc:  # noqa: BLE001
+        print(f'cibypui: 无法加载 Gtk4LayerShell（{exc}），回退普通窗口', file=sys.stderr)
+        return False
+    try:
         LayerShell.init_for_window(window)
     except Exception as exc:  # noqa: BLE001
         print(f'cibypui: layer-shell 不可用（{exc}），回退普通窗口', file=sys.stderr)
