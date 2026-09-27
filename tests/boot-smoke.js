@@ -437,15 +437,16 @@ async function main() {
 
     log('开始桌面会话冒烟（无头 Wayland，可能需要 1-3 分钟）…');
     const dsmoke = sshRun(key, r1.sshPort, knownHosts,
-      'CIBYP_GEOMETRY=1280x800 cibyp-desktop-smoke --geometry 1280x800 --out-png /tmp/cibyp-desktop.png 2>&1 | tail -30', 480000);
+        'CIBYP_GEOMETRY=1280x800 cibyp-desktop-smoke --geometry 1280x800 --out-png /tmp/cibyp-desktop.png 2>&1 | tail -200', 480000);
     if (!(dsmoke.code === 0 && /结果：全部通过/.test(dsmoke.out))) {
       // 失败：回读 guest 侧的完整诊断（会话日志 / 进程 / 环境），避免被 tail 截断
       const diag = sshRun(key, r1.sshPort, knownHosts,
         'tail -c 6000 /tmp/cibyp-desktop-smoke-$(id -u).log 2>/dev/null; echo "---- ps ----"; ps -eo user,pid,args | grep -E "cibyp|sway|wayvnc" | grep -v grep | head -15', 60000);
       log('桌面冒烟失败，guest 诊断如下：\n' + diag.out);
     }
-    checks.assert('桌面会话冒烟（sway + 自研外壳 + 截图 + 开始菜单）',
-      dsmoke.code === 0 && /结果：全部通过/.test(dsmoke.out), dsmoke.out.slice(-400));
+      const dsmokeFail = (String(dsmoke.out || '').match(/^.*FAIL.*$/gm) || []).join(' | ');
+      checks.assert('桌面会话冒烟（sway + 自研外壳 + 截图 + 开始菜单）',
+        dsmoke.code === 0 && /结果：全部通过/.test(dsmoke.out), (dsmokeFail || String(dsmoke.out || '').slice(-400)));
 
     const ver = process.env.VMOS_VERSION || '';
     const localPng = path.join(work, `cibyp-vmos-${ver ? ver + '-' : ''}${opts.variant}-${opts.arch}-desktop.png`);
