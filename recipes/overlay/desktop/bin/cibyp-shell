@@ -763,9 +763,6 @@ class ShellApp(Gtk.Application):
 
 def main():
     ui.ensure_layer_shell_preload()  # layer-shell 需 LD_PRELOAD：自动带环境重执行一次（必须在取锁之前）
-    if not single_instance_guard('cibyp-shell'):
-        print('cibyp-shell: 已有一个实例在运行，退出', file=sys.stderr)
-        return 0
     app = ShellApp()
     return app.run([])
 
