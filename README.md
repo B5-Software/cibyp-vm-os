@@ -88,7 +88,7 @@ node tests/boot-smoke.js --image out/cibyp-vmos-0.1.0-base-amd64.qcow2 \
 | 图标与壁纸 | 全部 Cairo 现画（自研） | `lib/cibypui.py`：20+ 线性图标、3 套壁纸（aurora/midnight/graphite）、品牌标记——**不依赖任何图标主题或图片资源** |
 | 基础软件 | `cibyp-files` / `cibyp-editor` / `cibyp-settings` / `cibyp-calc` / `cibyp-viewer` / `cibyp-about`（自研） | 文件管理器、文本编辑器、桌面设置、计算器、图片查看器、关于本机；文件菜单项见 `overlay/desktop/applications/` |
 | 远程桌面 | wayvnc（VNC）+ grim（截图） | 应用侧「VM 桌面窗口」经 SSH 端口转发直连；截图/录屏走 grim |
-| 输入与剪贴板 | ydotool（鼠标）/ wtype（键盘）/ wl-clipboard | 应用侧 computer-use（键鼠注入、剪贴板）在 VM 内生效，不触碰宿主 |
+| 输入与剪贴板 | **cibyp-input（自研 uinput 鼠标注入，零依赖）** / wtype（键盘）/ wl-clipboard | 应用侧 computer-use（键鼠注入、剪贴板）在 VM 内生效，不触碰宿主 |
 | 会话 | `cibyp-session`（自研） | 无头（`WLR_BACKENDS=headless` + pixman）或真实显示均可；监督外壳进程；`/usr/share/wayland-sessions/cibyp.desktop` 供 display manager 识别 |
 | 快捷键 | Mod+Enter 终端 / Mod+D 菜单 / Mod+E 文件 / Print 截图 / Mod+Shift+Q 电源 / Mod+1..4 工作区 | 见 sway 配置 |
 

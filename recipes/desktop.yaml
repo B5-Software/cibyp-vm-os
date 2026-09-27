@@ -30,7 +30,6 @@ actions:
       - slurp
       - wlr-randr
       - wl-clipboard
-      - ydotool
       - wtype
       - foot
       - dbus-x11
