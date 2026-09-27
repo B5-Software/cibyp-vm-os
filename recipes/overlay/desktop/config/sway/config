@@ -46,6 +46,14 @@ for_window [app_id="cibyp-viewer"] resize set 960 680
 for_window [app_id="cibyp-calc"] resize set 320 460, move position center
 for_window [app_id="foot"] resize set 900 560
 
+
+# 自研外壳：优先 layer-shell；若回退为普通窗口，用以下规则钉住位置（app_id 精确匹配优先于上面的通配规则）
+for_window [app_id="cibyp-panel"] floating enable, border none, sticky enable, move position 0 0, resize set 1280 38
+for_window [app_id="cibyp-desktop"] floating enable, border none, sticky enable, move position 0 0, resize set 1280 800
+for_window [app_id="cibyp-menu"] floating enable, border none, move position 0 0, resize set 1280 800
+for_window [app_id="cibyp-calendar"] floating enable, border none, move position 0 0, resize set 1280 800
+for_window [app_id="cibyp-power"] floating enable, border none, move position 0 0, resize set 1280 800
+
 # 快捷键
 bindsym $mod+Return exec $term
 bindsym $mod+d exec $menu

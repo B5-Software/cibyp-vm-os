@@ -183,6 +183,12 @@ else
 fi
 
 if [ "$FAIL" != 0 ]; then
+  echo "---- 诊断：前台自检（外壳直接跑 6 秒，抓退出码与输出）----"
+  ( cd /tmp && XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" WAYLAND_DISPLAY="$WAYLAND_DISPLAY" GSK_RENDERER="${GSK_RENDERER:-cairo}" \
+      timeout 6 python3 -u /usr/local/bin/cibyp-shell 2>&1 | head -30; echo "cibyp-shell 前台退出码: ${PIPESTATUS[0]}" ) 2>&1 | tail -35
+  echo "---- 诊断：环境 ----"
+  env | grep -E '^(XDG_RUNTIME_DIR|WAYLAND_DISPLAY|GSK_RENDERER|GDK_BACKEND|LD_PRELOAD|LIBGL)' | sort
+
   exec 9>>"$LOG"
   echo "---- 诊断：会话日志（末 40 行）----" >&9
   tail -40 "$LOG" 2>/dev/null >&9

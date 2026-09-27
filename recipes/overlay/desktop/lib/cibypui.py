@@ -476,6 +476,48 @@ def ensure_layer_shell_preload():
         pass  # 失败则继续（面板会退化为普通窗口，不致命）
 
 
+def try_layer_shell(window, *, namespace=None, layer='top', anchors=('top', 'left', 'right'), exclusive=None):
+    """安全初始化 layer-shell：任何失败都返回 False，让调用方回退为普通窗口。
+    返回 True 表示已是 layer surface（后续 LayerShell 调用才有效）。"""
+    try:
+        LayerShell.init_for_window(window)
+    except Exception as exc:  # noqa: BLE001
+        print(f'cibypui: layer-shell 不可用（{exc}），回退普通窗口', file=sys.stderr)
+        return False
+    try:
+        if namespace:
+            LayerShell.set_namespace(window, namespace)
+        layer_map = {
+            'background': LayerShell.Layer.BACKGROUND,
+            'bottom': LayerShell.Layer.BOTTOM,
+            'top': LayerShell.Layer.TOP,
+            'overlay': LayerShell.Layer.OVERLAY,
+        }
+        LayerShell.set_layer(window, layer_map.get(layer, LayerShell.Layer.TOP))
+        edge_map = {
+            'top': LayerShell.Edge.TOP, 'bottom': LayerShell.Edge.BOTTOM,
+            'left': LayerShell.Edge.LEFT, 'right': LayerShell.Edge.RIGHT,
+        }
+        for a in anchors:
+            LayerShell.set_anchor(window, edge_map[a], True)
+        if exclusive is not None:
+            LayerShell.set_exclusive_zone(window, exclusive)
+        # 只有真正能设扩展区/锚点，才算 layer-shell 可用
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f'cibypui: layer-shell 配置失败（{exc}），回退普通窗口', file=sys.stderr)
+        return False
+
+
+def layer_shell_geometry_fallback(window, width, height):
+    """回退普通窗口时的尺寸/最小尺寸设置（位置由 sway 规则处理）"""
+    try:
+        window.set_default_size(width, height)
+        window.set_size_request(min(width, 640), height)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ 小工具
 
 def arg_path(default=''):

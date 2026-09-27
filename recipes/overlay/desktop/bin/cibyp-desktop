@@ -67,12 +67,10 @@ class Desktop(Gtk.Window):
         super().__init__(application=app)
         self.set_name('cibyp-desktop')
         self.set_decorated(False)
-        LayerShell.init_for_window(self)
-        LayerShell.set_layer(self, LayerShell.Layer.BACKGROUND)
-        LayerShell.set_namespace(self, 'cibyp-desktop')
-        for e in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM, LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
-            LayerShell.set_anchor(self, e, True)
-        LayerShell.set_exclusive_zone(self, -1)
+        self.is_layer = ui.try_layer_shell(self, namespace='cibyp-desktop', layer='background',
+                                           anchors=('top', 'bottom', 'left', 'right'), exclusive=-1)
+        if not self.is_layer:
+            ui.layer_shell_geometry_fallback(self, 1280, 800)
 
         self.cfg = load_config()
         self.overlay = Gtk.Overlay()
