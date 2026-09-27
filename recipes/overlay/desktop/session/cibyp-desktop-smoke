@@ -181,8 +181,9 @@ else
 fi
 
 if [ "$FAIL" != 0 ]; then
-  echo "---- 诊断：会话日志（末 40 行）----"
-  tail -40 "$LOG" 2>/dev/null
+  exec 9>>"$LOG"
+  echo "---- 诊断：会话日志（末 40 行）----" >&9
+  tail -40 "$LOG" 2>/dev/null >&9
   echo "---- 诊断：相关进程 ----"
   ps -eo pid,user,args 2>/dev/null | grep -E 'cibyp|sway|wayvnc' | grep -v grep | head -20
   echo "---- 诊断：layer-shell 库与预加载 ----"
