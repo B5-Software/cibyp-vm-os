@@ -421,6 +421,41 @@ async function main() {
   const disk = probe("df -h / | tail -1 | awk '{print $2, $4}'");
   log('根分区容量/可用: ' + disk.out);
 
+  // ============ 桌面会话（desktop/full 变体）：Wayland + 自研外壳 ============
+  if (opts.variant === 'desktop' || opts.variant === 'full') {
+    const comps = probe('command -v sway && command -v grim && command -v wayvnc && command -v cibyp-session && command -v cibyp-shell && command -v cibyp-desktop && command -v cibypctl && echo ok || echo missing');
+    checks.assert('桌面组件齐备（sway/wayvnc/grim + 自研外壳与基础软件）', comps.out.includes('ok'), comps.out + comps.err);
+
+    const bind = probe("python3 -c \"import gi; gi.require_version('Gtk4LayerShell','1.0'); from gi.repository import Gtk4LayerShell; print('layershell-ok')\" 2>&1 | tail -1");
+    checks.assert('GTK4 layer-shell 绑定可用', bind.out.includes('layershell-ok'), bind.out);
+
+    const apps = probe("for a in cibyp-files cibyp-editor cibyp-settings cibyp-calc cibyp-viewer cibyp-about; do command -v $a >/dev/null || echo missing-$a; done; echo apps-ok");
+    checks.assert('自研基础软件已安装（文件/编辑器/设置/计算器/图片查看器/关于）', apps.out.includes('apps-ok') && !apps.out.includes('missing-'), apps.out);
+
+    const desktopEntries = probe("ls /usr/share/applications/cibyp-*.desktop | wc -l");
+    checks.assert('桌面菜单项（.desktop）已安装', parseInt(desktopEntries.out, 10) >= 7, desktopEntries.out);
+
+    log('开始桌面会话冒烟（无头 Wayland，可能需要 1-3 分钟）…');
+    const dsmoke = sshRun(key, r1.sshPort, knownHosts,
+      'CIBYP_GEOMETRY=1280x800 cibyp-desktop-smoke --geometry 1280x800 --out-png /tmp/cibyp-desktop.png 2>&1 | tail -30', 480000);
+    checks.assert('桌面会话冒烟（sway + 自研外壳 + 截图 + 开始菜单）',
+      dsmoke.code === 0 && /结果：全部通过/.test(dsmoke.out), dsmoke.out.slice(-400));
+
+    const ver = process.env.VMOS_VERSION || '';
+    const localPng = path.join(work, `cibyp-vmos-${ver ? ver + '-' : ''}${opts.variant}-${opts.arch}-desktop.png`);
+    const scp = spawnSync('scp', ['-P', String(r1.sshPort), '-i', key, '-o', 'StrictHostKeyChecking=no',
+      '-o', `UserKnownHostsFile=${knownHosts}`, 'cibyp@127.0.0.1:/tmp/cibyp-desktop.png', localPng], { encoding: 'utf8' });
+    const pngOk = scp.status === 0 && fs.existsSync(localPng) && fs.statSync(localPng).size > 20000;
+    checks.assert('桌面预览图已生成（PNG ≥ 20KB）', pngOk, (scp.stderr || '').slice(0, 200));
+    if (pngOk) {
+      log(`桌面预览图: ${path.basename(localPng)}（${Math.round(fs.statSync(localPng).size / 1024)} KB）`);
+      // amd64/desktop 额外产出一份稳定文件名，供 README / 发布说明直接引用
+      if (opts.variant === 'desktop' && opts.arch === 'amd64') {
+        try { fs.copyFileSync(localPng, path.join(work, 'desktop-preview.png')); } catch { /* ignore */ }
+      }
+    }
+  }
+
   // ============ 第二轮：同一 overlay 重启 → 数据持久 ============
   await vm.poweroff(key, r1.sshPort, knownHosts);
   const r2 = await boot('第2轮');

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=关于本机
+Name[en]=About
+Comment=系统与版本信息
+Exec=cibyp-about
+Icon=help-about
+Terminal=false
+Categories=System;
+StartupNotify=false

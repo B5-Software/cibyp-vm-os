@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=浏览器
+Name[en]=Browser
+Comment=Chromium 浏览器
+Exec=chromium --ozone-platform=wayland --start-maximized
+Icon=web-browser
+Terminal=false
+Categories=Network;WebBrowser;
+StartupNotify=false

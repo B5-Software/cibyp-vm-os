@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# cibyp-editor —— CIBYP 桌面「文本编辑器」（自研，GTK4 + Cairo，无第三方图标/主题资源）
+#
+# 功能：
+#   - 新建/打开/保存/另存为（Gtk.FileDialog），快捷键 Ctrl+N/O/S/Shift+S
+#   - 查找替换栏：高亮全部命中 + 定位当前命中 + 替换/全部替换
+#   - 等宽字体显示，状态栏显示行数/词数/字符数与文件路径
+#   - 未保存时标题加「•」，关闭窗口时确认（保存/不保存/取消）
+#   - 所有文件读写均有异常保护，失败给出中文提示
+#
+# 依赖：python3-gi + GTK4（其余仅标准库）。
+
+import os
+import re
+import sys
+
+# ---- 共享绘制库路径（镜像内 /usr/local 与开发树 ../lib 均可） ----
+for _p in ('/usr/local/lib/cibyp-desktop/lib',
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
+
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+import cibypui  # noqa: E402
+
+APP_ID = 'com.b5software.cibyp.editor'
+WINDOW_NAME = 'cibyp-editor'
+MAX_HIGHLIGHT_CHARS = 2_000_000        # 超大文件不做高亮，避免卡顿
+
+LOCAL_CSS = b"""
+window.cibyp-app { background: rgb(11, 15, 26); }
+.cibyp-toolbar { background: rgba(15, 20, 33, 0.90); border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+.cibyp-statusbar { background: rgba(15, 20, 33, 0.90); border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cibyp-editor text { background: transparent; color: rgb(233, 238, 248); }
+.cibyp-editor { background: rgba(19, 25, 40, 0.96); }
+.cibyp-danger { color: rgb(255, 107, 129); }
+"""
+
+CJK_RE = re.compile(r'[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]')
+WORD_RE = re.compile(r"[A-Za-z0-9_'-]+")
+TEXT_PATTERNS = ('*.txt', '*.md', '*.py', '*.sh', '*.json', '*.ini', '*.cfg', '*.conf',
+                 '*.toml', '*.yaml', '*.yml', '*.log', '*.csv', '*.c', '*.h', '*.cpp',
+                 '*.css', '*.html', '*.xml')
+
+
+# ------------------------------------------------------------------ 纯逻辑函数
+# 以下函数不依赖 GUI，可用 python3 -c 单独验证。
+
+def count_stats(text):
+    """统计 → (行数, 词数, 字符数)；中文按字计数，西文按单词计数"""
+    lines = text.count('\n') + 1 if text else 0
+    words = len(WORD_RE.findall(text)) + len(CJK_RE.findall(text))
+    return lines, words, len(text)
+
+
+def find_all(text, needle, case_sensitive=False):
+    """查找全部命中 → [(start, end)] 字符偏移"""
+    if not needle:
+        return []
+    haystack = text if case_sensitive else text.lower()
+    target = needle if case_sensitive else needle.lower()
+    hits = []
+    index = 0
+    step = max(1, len(target))
+    while index <= len(haystack):
+        found = haystack.find(target, index)
+        if found < 0:
+            break
+        hits.append((found, found + len(target)))
+        index = found + step
+    return hits
+
+
+def replace_all(text, needle, replacement, case_sensitive=False):
+    """全部替换 → (新文本, 替换次数)"""
+    hits = find_all(text, needle, case_sensitive)
+    if not hits:
+        return text, 0
+    parts = []
+    prev = 0
+    for start, end in hits:
+        parts.append(text[prev:start])
+        parts.append(replacement)
+        prev = end
+    parts.append(text[prev:])
+    return ''.join(parts), len(hits)
+
+
+def decode_bytes(raw):
+    """尽量把文件字节解码为文本 → (文本, 编码名)"""
+    for enc in ('utf-8', 'utf-8-sig', 'gb18030', 'latin-1'):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    return raw.decode('utf-8', errors='replace'), 'utf-8(替换非法字节)'
+
+
+# ------------------------------------------------------------------ 小工具
+
+def install_local_css():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(LOCAL_CSS)
+    display = Gdk.Display.get_default()
+    if display is not None:
+        Gtk.StyleContext.add_provider_for_display(
+            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+def make_icon(name, size=18, color=None, stroke=1.9):
+    col = color or cibypui.TEXT
+
+    def _draw(_area, cr, w, h, _data):
+        cibypui.draw_icon(cr, name, 0, 0, min(w, h), col, stroke)
+
+    area = Gtk.DrawingArea()
+    area.set_content_width(size)
+    area.set_content_height(size)
+    area.set_draw_func(_draw, None)
+    return area
+
+
+def tool_button(name, tip, callback, size=18, color=None):
+    btn = Gtk.Button()
+    btn.add_css_class('cibyp-btn')
+    btn.set_child(make_icon(name, size, color))
+    btn.set_tooltip_text(tip)
+    btn.connect('clicked', lambda *_a: callback())
+    return btn
+
+
+def text_button(text, tip, callback, accent=False):
+    btn = Gtk.Button(label=text)
+    btn.add_css_class('cibyp-btn')
+    if accent:
+        btn.add_css_class('accent')
+    if tip:
+        btn.set_tooltip_text(tip)
+    btn.connect('clicked', lambda *_a: callback())
+    return btn
+
+
+def label(text, css=None, xalign=0.0):
+    lbl = Gtk.Label(label=text, xalign=xalign)
+    if css:
+        lbl.add_css_class(css)
+    return lbl
+
+
+def pad(widget, margin):
+    widget.set_margin_top(margin)
+    widget.set_margin_bottom(margin)
+    widget.set_margin_start(margin)
+    widget.set_margin_end(margin)
+    return widget
+
+
+def show_error(parent, message, detail=''):
+    dlg = Gtk.AlertDialog()
+    dlg.set_modal(True)
+    dlg.set_message(message)
+    if detail:
+        dlg.set_detail(detail)
+    dlg.set_buttons(['知道了'])
+    try:
+        dlg.show(parent)
+    except Exception:
+        pass
+
+
+def ask_save(parent, on_choice):
+    """未保存询问：on_choice('save'|'discard'|'cancel')"""
+    dlg = Gtk.AlertDialog()
+    dlg.set_modal(True)
+    dlg.set_message('有未保存的修改')
+    dlg.set_detail('是否保存当前文件？')
+    dlg.set_buttons(['取消', '不保存', '保存'])
+    dlg.set_cancel_button(0)
+    dlg.set_default_button(2)
+
+    def _done(source, result, _data):
+        try:
+            index = source.choose_finish(result)
+        except Exception:
+            index = 0
+        on_choice({1: 'discard', 2: 'save'}.get(index, 'cancel'))
+
+    try:
+        dlg.choose(parent, None, _done, None)
+    except Exception:
+        on_choice('cancel')
+
+
+# ------------------------------------------------------------------ 主窗口
+
+class EditorWindow(Gtk.ApplicationWindow):
+
+    def __init__(self, app):
+        super().__init__(application=app, title='文本编辑器')
+        self.set_name(WINDOW_NAME)
+        self.add_css_class('cibyp-app')
+        self.set_default_size(900, 600)
+
+        self.path = None
+        self.dirty = False
+        self._loading = False
+        self._force_close = False
+        self._toast_token = 0
+        self.hits = []
+        self.hit_index = -1
+
+        self._build_header()
+        self._build_body()
+        self._install_actions()
+        self._refresh_title()
+        self._refresh_stats()
+
+        self.connect('close-request', self._on_close_request)
+
+    # --------------------------------------------------------- 界面搭建
+
+    def _build_header(self):
+        header = Gtk.HeaderBar()
+        header.add_css_class('cibyp-panel')
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title_box.append(make_icon('editor', 16))
+        self.header_label = label('未命名', 'cibyp-title')
+        title_box.append(self.header_label)
+        header.set_title_widget(title_box)
+        self.set_titlebar(header)
+
+    def _build_body(self):
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.set_child(root)
+        root.append(self._build_toolbar())
+        root.append(self._build_findbar())
+
+        self.buffer = Gtk.TextBuffer()
+        self.buffer.set_enable_undo(True)
+        self.buffer.connect('changed', self._on_buffer_changed)
+        self.tag_hit = self.buffer.create_tag('search-hit', background='rgba(124, 107, 255, 0.35)')
+        self.tag_cur = self.buffer.create_tag('search-cur', background='rgba(77, 214, 193, 0.55)')
+
+        self.text_view = Gtk.TextView.new_with_buffer(self.buffer)
+        self.text_view.set_monospace(True)
+        self.text_view.add_css_class('cibyp-mono')
+        self.text_view.add_css_class('cibyp-editor')
+        self.text_view.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.text_view.set_left_margin(10)
+        self.text_view.set_right_margin(10)
+        self.text_view.set_top_margin(8)
+        self.text_view.set_bottom_margin(8)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_child(self.text_view)
+        scroll.set_vexpand(True)
+        root.append(scroll)
+        root.append(self._build_statusbar())
+
+    def _build_toolbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bar.add_css_class('cibyp-toolbar')
+        for name, tip, cb in (
+            ('file', '新建（Ctrl+N）', self.new_file),
+            ('open', '打开（Ctrl+O）', self.open_file),
+            ('save', '保存（Ctrl+S）', self.save_file),
+            ('edit', '另存为（Ctrl+Shift+S）', self.save_file_as),
+            ('search', '查找替换（Ctrl+F）', self.toggle_findbar),
+        ):
+            bar.append(tool_button(name, tip, cb))
+        spacer = Gtk.Box()
+        spacer.set_hexpand(True)
+        bar.append(spacer)
+        self.pos_label = label('', 'cibyp-dim')
+        bar.append(self.pos_label)
+        return pad(bar, 6)
+
+    def _build_findbar(self):
+        self.findbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        self.findbar.add_css_class('cibyp-toolbar')
+        self.findbar.set_visible(False)
+
+        self.find_entry = Gtk.Entry()
+        self.find_entry.add_css_class('cibyp-entry')
+        self.find_entry.set_placeholder_text('查找…')
+        self.find_entry.set_hexpand(True)
+        self.find_entry.connect('activate', lambda *_a: self.find_next())
+        self.find_entry.connect('changed', lambda *_a: self.refresh_matches())
+
+        self.repl_entry = Gtk.Entry()
+        self.repl_entry.add_css_class('cibyp-entry')
+        self.repl_entry.set_placeholder_text('替换为…')
+        self.repl_entry.set_hexpand(True)
+        self.repl_entry.connect('activate', lambda *_a: self.replace_current())
+
+        self.findbar.append(self.find_entry)
+        self.findbar.append(self.repl_entry)
+        self.findbar.append(text_button('上一个', '查找上一个（Shift+Enter）', self.find_prev))
+        self.findbar.append(text_button('下一个', '查找下一个（Enter）', self.find_next))
+        self.findbar.append(text_button('替换', '替换当前命中', self.replace_current))
+        self.findbar.append(text_button('全部替换', '替换全部命中', self.replace_all_hits, accent=True))
+        self.findbar.append(tool_button('close', '关闭查找栏', self.toggle_findbar, 16))
+        return pad(self.findbar, 6)
+
+    def _build_statusbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        bar.add_css_class('cibyp-statusbar')
+        self.status_left = label('', 'cibyp-dim', 0.0)
+        self.status_left.set_hexpand(True)
+        self.status_left.set_ellipsize(3)
+        self.status_right = label('', 'cibyp-dim', 1.0)
+        bar.append(self.status_left)
+        bar.append(self.status_right)
+        return pad(bar, 5)
+
+    def _install_actions(self):
+        actions = {
+            'new': self.new_file,
+            'open': self.open_file,
+            'save': self.save_file,
+            'save-as': self.save_file_as,
+            'find': self.toggle_findbar,
+            'undo': lambda: self._undo(False),
+            'redo': lambda: self._undo(True),
+            'find-next': self.find_next,
+            'find-prev': self.find_prev,
+        }
+        for name, cb in actions.items():
+            action = Gio.SimpleAction.new(name, None)
+            action.connect('activate', lambda *_a, _cb=cb: _cb())
+            self.add_action(action)
+        app = self.get_application()
+        if app is not None:
+            app.set_accels_for_action('win.new', ['<Ctrl>n'])
+            app.set_accels_for_action('win.open', ['<Ctrl>o'])
+            app.set_accels_for_action('win.save', ['<Ctrl>s'])
+            app.set_accels_for_action('win.save-as', ['<Ctrl><Shift>s'])
+            app.set_accels_for_action('win.find', ['<Ctrl>f'])
+            app.set_accels_for_action('win.undo', ['<Ctrl>z'])
+            app.set_accels_for_action('win.redo', ['<Ctrl><Shift>z', '<Ctrl>y'])
+            app.set_accels_for_action('win.find-next', ['<Ctrl>g'])
+            app.set_accels_for_action('win.find-prev', ['<Ctrl><Shift>g'])
+
+    # --------------------------------------------------------- 文件读写
+
+    def _current_dir(self):
+        if self.path:
+            return os.path.dirname(self.path)
+        return os.path.expanduser('~')
+
+    def _file_dialog(self, title, open_mode=True):
+        dlg = Gtk.FileDialog()
+        dlg.set_title(title)
+        filters = Gio.ListStore.new(Gtk.FileFilter)
+
+        text_filter = Gtk.FileFilter()
+        text_filter.set_name('文本文件')
+        for pattern in TEXT_PATTERNS:
+            text_filter.add_pattern(pattern)
+        filters.append(text_filter)
+
+        all_filter = Gtk.FileFilter()
+        all_filter.set_name('所有文件')
+        all_filter.add_pattern('*')
+        filters.append(all_filter)
+
+        dlg.set_filters(filters)
+        dlg.set_default_filter(text_filter)
+        try:
+            dlg.set_initial_folder(Gio.File.new_for_path(self._current_dir()))
+        except Exception:
+            pass
+        if not open_mode:
+            dlg.set_initial_name(os.path.basename(self.path) if self.path else '未命名.txt')
+        return dlg
+
+    def new_file(self):
+        if self.dirty:
+            ask_save(self, lambda choice: self._new_after_choice(choice))
+        else:
+            self._load_text('', None)
+
+    def _new_after_choice(self, choice):
+        if choice == 'save':
+            if not self.save_file(then=lambda ok: self._load_text('', None) if ok else None):
+                return
+        elif choice == 'discard':
+            self._load_text('', None)
+
+    def open_file(self):
+        dlg = self._file_dialog('打开文件', True)
+
+        def _done(source, result, _data):
+            try:
+                gfile = source.open_finish(result)
+            except GLib.Error as exc:
+                if not exc.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED):
+                    show_error(self, '打开失败', exc.message)
+                return
+            except Exception as exc:  # noqa: BLE001
+                show_error(self, '打开失败', str(exc))
+                return
+            self.load_path(gfile.get_path() or gfile.get_uri())
+
+        try:
+            dlg.open(self, None, _done, None)
+        except Exception as exc:  # noqa: BLE001
+            show_error(self, '无法打开文件对话框', str(exc))
+
+    def load_path(self, path):
+        try:
+            with open(path, 'rb') as handle:
+                raw = handle.read()
+            text, _enc = decode_bytes(raw)
+        except OSError as exc:
+            show_error(self, '打开失败', f'{path}：{exc}')
+            return
+        except Exception as exc:  # noqa: BLE001
+            show_error(self, '打开失败', str(exc))
+            return
+        self._load_text(text, path)
+        self.toast(f'已打开 {os.path.basename(path)}')
+
+    def _load_text(self, text, path):
+        self._loading = True
+        try:
+            self.buffer.set_text(text)
+            self.path = path
+            self.dirty = False
+            self.buffer.set_modified(False)
+        finally:
+            self._loading = False
+        start = self.buffer.get_start_iter()
+        self.buffer.place_cursor(start)
+        self._refresh_title()
+        self._refresh_stats()
+        self.refresh_matches()
+
+    def save_file(self, then=None):
+        """保存；then(ok) 在完成后回调。返回 False 表示尚未完成（对话框异步）"""
+        if not self.path:
+            return self.save_file_as(then)
+        try:
+            with open(self.path, 'w', encoding='utf-8', newline='') as handle:
+                start, end = self.buffer.get_bounds()
+                handle.write(self.buffer.get_text(start, end, True))
+        except OSError as exc:
+            show_error(self, '保存失败', f'{self.path}：{exc}')
+            if then:
+                then(False)
+            return True
+        self.dirty = False
+        self.buffer.set_modified(False)
+        self._refresh_title()
+        self.toast(f'已保存 {os.path.basename(self.path)}')
+        if then:
+            then(True)
+        return True
+
+    def save_file_as(self, then=None):
+        dlg = self._file_dialog('另存为', False)
+
+        def _done(source, result, _data):
+            try:
+                gfile = source.save_finish(result)
+            except GLib.Error as exc:
+                if not exc.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED):
+                    show_error(self, '保存失败', exc.message)
+                if then:
+                    then(False)
+                return
+            except Exception as exc:  # noqa: BLE001
+                show_error(self, '保存失败', str(exc))
+                if then:
+                    then(False)
+                return
+            self.path = gfile.get_path() or gfile.get_uri()
+            self.save_file(then)
+
+        try:
+            dlg.save(self, None, _done, None)
+        except Exception as exc:  # noqa: BLE001
+            show_error(self, '无法打开另存为对话框', str(exc))
+            if then:
+                then(False)
+        return False
+
+    # --------------------------------------------------------- 查找替换
+
+    def toggle_findbar(self):
+        visible = not self.findbar.get_visible()
+        self.findbar.set_visible(visible)
+        if visible:
+            self.find_entry.grab_focus()
+            self.refresh_matches()
+
+    def refresh_matches(self):
+        buf = self.buffer
+        start, end = buf.get_bounds()
+        buf.remove_tag(self.tag_hit, start, end)
+        buf.remove_tag(self.tag_cur, start, end)
+        self.hits = []
+        self.hit_index = -1
+        needle = self.find_entry.get_text() if hasattr(self, 'find_entry') else ''
+        if not needle:
+            self._set_match_label()
+            return
+        if buf.get_char_count() > MAX_HIGHLIGHT_CHARS:
+            self._set_match_label()
+            return
+        text = buf.get_text(start, end, True)
+        self.hits = find_all(text, needle, False)
+        for offset_start, offset_end in self.hits:
+            iter_start = buf.get_iter_at_offset(offset_start)
+            iter_end = buf.get_iter_at_offset(offset_end)
+            buf.apply_tag(self.tag_hit, iter_start, iter_end)
+        self._set_match_label()
+
+    def _set_match_label(self):
+        if not self.find_entry.get_text():
+            self.pos_label.set_text('')
+            return
+        total = len(self.hits)
+        current = self.hit_index + 1 if self.hit_index >= 0 else 0
+        self.pos_label.set_text(f'命中 {current}/{total}' if total else '无命中')
+
+    def _goto_hit(self, index):
+        if not self.hits:
+            self.toast('没有命中项', error=True)
+            return
+        self.hit_index = index % len(self.hits)
+        buf = self.buffer
+        offset_start, offset_end = self.hits[self.hit_index]
+        iter_start = buf.get_iter_at_offset(offset_start)
+        iter_end = buf.get_iter_at_offset(offset_end)
+        buf.remove_tag(self.tag_cur, *buf.get_bounds())
+        buf.apply_tag(self.tag_cur, iter_start, iter_end)
+        buf.select_range(iter_start, iter_end)
+        self.text_view.scroll_to_iter(iter_start, 0.2, False, 0.0, 0.0)
+        self._set_match_label()
+
+    def find_next(self):
+        if not self.hits:
+            self.refresh_matches()
+        if not self.hits:
+            self.toast('没有命中项', error=True)
+            return
+        self._goto_hit(self.hit_index + 1)
+
+    def find_prev(self):
+        if not self.hits:
+            self.refresh_matches()
+        if not self.hits:
+            self.toast('没有命中项', error=True)
+            return
+        self._goto_hit(self.hit_index - 1)
+
+    def replace_current(self):
+        needle = self.find_entry.get_text()
+        repl = self.repl_entry.get_text()
+        if not needle:
+            self.toast('请输入查找内容', error=True)
+            return
+        buf = self.buffer
+        if buf.get_has_selection():
+            sel_start, sel_end = buf.get_selection_bounds()
+            selected = buf.get_text(sel_start, sel_end, True)
+            if selected == needle:
+                buf.begin_user_action()
+                buf.delete(sel_start, sel_end)
+                buf.insert(sel_start, repl)
+                buf.end_user_action()
+                self.refresh_matches()
+                self.toast('已替换 1 处')
+                return
+        self.find_next()
+        if not self.hits or self.hit_index < 0:
+            return
+        offset_start, offset_end = self.hits[self.hit_index]
+        iter_start = buf.get_iter_at_offset(offset_start)
+        iter_end = buf.get_iter_at_offset(offset_end)
+        buf.begin_user_action()
+        buf.delete(iter_start, iter_end)
+        buf.insert(iter_start, repl)
+        buf.end_user_action()
+        self.refresh_matches()
+        self.toast('已替换 1 处')
+
+    def replace_all_hits(self):
+        needle = self.find_entry.get_text()
+        repl = self.repl_entry.get_text()
+        if not needle:
+            self.toast('请输入查找内容', error=True)
+            return
+        buf = self.buffer
+        start, end = buf.get_bounds()
+        text = buf.get_text(start, end, True)
+        new_text, count = replace_all(text, needle, repl, False)
+        if not count:
+            self.toast('没有命中项', error=True)
+            return
+        buf.begin_user_action()
+        start, end = buf.get_bounds()
+        buf.delete(start, end)
+        buf.insert(buf.get_start_iter(), new_text)
+        buf.end_user_action()
+        self.refresh_matches()
+        self.toast(f'已替换 {count} 处')
+
+    # --------------------------------------------------------- 状态维护
+
+    def _undo(self, redo=False):
+        can = self.buffer.get_can_redo() if redo else self.buffer.get_can_undo()
+        if not can:
+            self.toast('没有可重做的操作' if redo else '没有可撤销的操作')
+            return
+        if redo:
+            self.buffer.redo()
+        else:
+            self.buffer.undo()
+
+    def _on_buffer_changed(self, _buf):
+        if self._loading:
+            return
+        self.dirty = True
+        self._refresh_title()
+        self._refresh_stats()
+
+    def _refresh_title(self):
+        name = os.path.basename(self.path) if self.path else '未命名'
+        mark = '• ' if self.dirty else ''
+        self.header_label.set_text(f'{mark}{name}')
+        self.set_title(f'{mark}{name} — 文本编辑器')
+
+    def _refresh_stats(self):
+        start, end = self.buffer.get_bounds()
+        text = self.buffer.get_text(start, end, True)
+        lines, words, chars = count_stats(text)
+        self.status_left.set_text(f'{lines} 行 · {words} 词 · {chars} 字符')
+        self.status_right.set_text(self.path or '未保存的新文件')
+
+    def toast(self, text, error=False):
+        self._toast_token += 1
+        token = self._toast_token
+        self.status_left.set_text(text)
+        if error:
+            self.status_left.add_css_class('cibyp-danger')
+        else:
+            self.status_left.remove_css_class('cibyp-danger')
+
+        def _restore():
+            if token == self._toast_token:
+                self._refresh_stats()
+            return False
+
+        GLib.timeout_add(4000, _restore)
+
+    # --------------------------------------------------------- 关闭确认
+
+    def _on_close_request(self, _win):
+        if self._force_close or not self.dirty:
+            return False
+        ask_save(self, self._close_choice)
+        return True
+
+    def _close_choice(self, choice):
+        if choice == 'discard':
+            self._force_close = True
+            self.close()
+        elif choice == 'save':
+            self.save_file(then=lambda ok: self._close_after_save(ok))
+
+    def _close_after_save(self, ok):
+        if ok:
+            self._force_close = True
+            self.close()
+
+
+# ------------------------------------------------------------------ 应用
+
+class EditorApp(Gtk.Application):
+
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        try:
+            cibypui.install_css()
+            install_local_css()
+            win = EditorWindow(self)
+            initial = cibypui.arg_path()
+            if initial and os.path.exists(initial):
+                win.load_path(initial)
+            win.present()
+        except Exception as exc:  # noqa: BLE001
+            print(f'cibyp-editor: 启动失败: {exc}', file=sys.stderr)
+
+
+def main():
+    return EditorApp().run([sys.argv[0]])
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,153 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# CIBYP 桌面会话启动器（自研）
+#   - 可被应用（VM 图形栈）通过 SSH 以无头后端启动：WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_RENDERER=pixman
+#   - 也可在真实显示环境下直接运行
+#   - 拉起 sway（自研配置）+ cibyp-desktop（壁纸/桌面右键）+ cibyp-shell（面板/菜单/任务栏）
+#   - 监督外壳进程（异常退出自动重启，最多 5 次），sway 退出则整个会话退出
+#
+# 环境变量：
+#   CIBYP_GEOMETRY  输出分辨率（默认 1280x800）
+#   CIBYP_LOG       日志文件（默认 /tmp/cibyp-session.log）
+#   WLR_*           透传给 wlroots（无头后端等）
+
+set -u
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=CIBYP
+export GDK_BACKEND=wayland
+export QT_QPA_PLATFORM=wayland
+export MOZ_ENABLE_WAYLAND=1
+export _JAVA_AWT_WM_NONREPARENTING=1
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+export GTK_A11Y="${GTK_A11Y:-none}"
+# gtk4-layer-shell：GTK4 载入顺序限制，需在本会话内预加载（实测 sway/外壳/应用均稳定）
+for _lsl in /usr/lib/*/libgtk4-layer-shell.so.0 /usr/lib/libgtk4-layer-shell.so.0; do
+  if [ -f "$_lsl" ]; then
+    export LD_PRELOAD="$_lsl${LD_PRELOAD:+:$LD_PRELOAD}"
+    break
+  fi
+done
+export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+GEOMETRY="${CIBYP_GEOMETRY:-1280x800}"
+LOG="${CIBYP_LOG:-/tmp/cibyp-session.log}"
+WIDTH="${GEOMETRY%x*}"; HEIGHT="${GEOMETRY#*x}"
+
+# XDG_RUNTIME_DIR：无 systemd 会话时（如 CI）用临时目录
+if [ -z "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "${XDG_RUNTIME_DIR:-}" ]; then
+  export XDG_RUNTIME_DIR="/tmp/cibyp-runtime-$(id -u)"
+fi
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+SWAY_CONFIG="/etc/cibyp/sway/config"
+[ -f "$SWAY_CONFIG" ] || SWAY_CONFIG="$HOME/.config/sway/config"
+LOGIN_ENV="$(cat /proc/1/environ 2>/dev/null | tr '\0' '\n' | grep -E '^(DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR)=' || true)"
+
+log() { echo "[cibyp-session] $*" | tee -a "$LOG" >&2; }
+
+: > "$LOG"
+# 清理当前用户的残留会话与 socket（按进程名精确匹配，避免误杀自己）
+self_pid=$
+_myuid="$(id -u)"
+for _cmd in cibyp-shell cibyp-desktop wayvnc sway ydotoold; do
+  for _p in $(pgrep -u "$_myuid" -x "$_cmd" 2>/dev/null || true); do
+    [ "$_p" = "$self_pid" ] && continue
+    kill "$_p" 2>/dev/null || true
+  done
+done
+sleep 0.4
+rm -f "${XDG_RUNTIME_DIR:-/tmp}"/wayland-* "${XDG_RUNTIME_DIR:-/tmp}"/sway-ipc.*.sock 2>/dev/null || true
+
+log "启动会话：geometry=$GEOMETRY backend=${WLR_BACKENDS:-auto} runtime=$XDG_RUNTIME_DIR"
+log "wayland socket: $XDG_RUNTIME_DIR/wayland-*（sway 启动后生成）"
+
+# DBus：有会话总线则复用，否则拉起一个（不影响无 dbus 环境）
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-daemon >/dev/null 2>&1; then
+  _dbus_out="$(dbus-daemon --session --fork --print-address=1 --print-pid=1 2>/dev/null || true)"
+  _addr="$(echo "$_dbus_out" | sed -n 1p)"
+  _pid="$(echo "$_dbus_out" | sed -n 2p)"
+  if [ -n "$_addr" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="$_addr"
+    [ -n "$_pid" ] && export DBUS_SESSION_BUS_PID="$_pid"
+    log "已启动 dbus-daemon（$_addr）"
+  fi
+fi
+
+# sway（前台运行在后台，便于监督子进程）
+sway --config "$SWAY_CONFIG" >>"$LOG" 2>&1 &
+SWAY_PID=$!
+log "sway 已启动 pid=$SWAY_PID"
+
+wait_for_sway() {
+  # 说明：sway 只给它的子进程设置 SWAYSOCK，脚本自身要用 socket 文件发现 + 显式导出
+  for _ in $(seq 1 120); do
+    local sock
+    sock="$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
+    local wl
+    wl="$(ls -t "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | head -1 || true)"
+    if [ -n "$sock" ] && [ -n "$wl" ]; then
+      export SWAYSOCK="$sock"
+      export WAYLAND_DISPLAY="$(basename "$wl")"
+      return 0
+    fi
+    if ! kill -0 "$SWAY_PID" 2>/dev/null; then return 1; fi
+    sleep 0.25
+  done
+  return 1
+}
+if ! wait_for_sway; then
+  log "错误：sway 未能在 30s 内就绪"; tail -30 "$LOG" >&2; kill "$SWAY_PID" 2>/dev/null || true; exit 1
+fi
+log "sway 就绪：SWAYSOCK=$SWAYSOCK WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+log "sway 版本：$(swaymsg -t get_version 2>/dev/null | head -1)"
+
+# 输出分辨率（虚拟输出用 wlr-randr；失败则回退 swaymsg / 配置默认）
+apply_output() {
+  local out_name="$1"
+  if command -v wlr-randr >/dev/null 2>&1; then
+    wlr-randr --output "$out_name" --mode "$GEOMETRY" >/dev/null 2>&1 && { log "已设置 $out_name → $GEOMETRY"; return 0; }
+  fi
+  if [ -n "${SWAYSOCK:-}" ]; then
+    swaymsg output "$out_name" mode "${WIDTH}x${HEIGHT}" >/dev/null 2>&1 && { log "swaymsg 设置 $out_name → $GEOMETRY"; return 0; }
+  fi
+  return 1
+}
+for out_name in $(swaymsg -t get_outputs 2>/dev/null | grep -o '"name": "[^"]*"' | cut -d'"' -f4); do
+  apply_output "$out_name" || log "跳过输出分辨率设置：$out_name"
+done
+
+start_shell() {
+  nohup /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1 &
+  nohup /usr/local/bin/cibyp-shell >>"$LOG" 2>&1 &
+  log "外壳已启动：cibyp-desktop + cibyp-shell"
+}
+start_shell
+sleep 1
+
+# 监督：外壳异常退出自动重启（最多 5 次），sway 退出则结束
+RESTART=0
+while kill -0 "$SWAY_PID" 2>/dev/null; do
+  if ! pgrep -f 'cibyp-shell' >/dev/null 2>&1 || ! pgrep -f 'cibyp-desktop' >/dev/null 2>&1; then
+    if [ "$RESTART" -ge 5 ]; then
+      log "外壳重启次数过多，停止监督"
+    else
+      RESTART=$((RESTART + 1))
+      log "外壳退出，第 $RESTART 次重启"
+      pkill -f 'cibyp-shell' 2>/dev/null || true
+      pkill -f 'cibyp-desktop' 2>/dev/null || true
+      sleep 1
+      start_shell
+    fi
+  fi
+  sleep 2
+done
+
+log "sway 已退出，清理会话"
+pkill -f 'cibyp-shell' 2>/dev/null || true
+pkill -f 'cibyp-desktop' 2>/dev/null || true
+pkill -f 'wayvnc' 2>/dev/null || true
+exit 0

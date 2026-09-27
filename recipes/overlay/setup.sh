@@ -252,6 +252,41 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* 2>/dev/null || true
 find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
 
+# ---------------------------------------------------------------- 自研 Wayland 桌面
+# 镜像内布局：
+#   /usr/local/lib/cibyp-desktop/lib  共享主题与绘制（cibypui.py）
+#   /usr/local/bin/cibyp-*            外壳、基础软件、会话与冒烟脚本
+#   /etc/cibyp/sway/config            sway 配置（同时写入 skel 与 cibyp 用户）
+#   /usr/share/wayland-sessions       Wayland 会话入口（供 display manager 识别）
+if [ -d /opt/cibyp-overlay/desktop ]; then
+  echo "[cibyp] 安装自研 Wayland 桌面（外壳/基础软件/sway 配置）"
+  install -d -m 0755 /usr/local/lib/cibyp-desktop/lib /usr/local/lib/cibyp-desktop/bin /etc/cibyp/sway
+  cp -a /opt/cibyp-overlay/desktop/lib/. /usr/local/lib/cibyp-desktop/lib/ 2>/dev/null || true
+  cp -a /opt/cibyp-overlay/desktop/bin/. /usr/local/lib/cibyp-desktop/bin/ 2>/dev/null || true
+  cp -a /opt/cibyp-overlay/desktop/bin/. /usr/local/bin/ 2>/dev/null || true
+  [ -f /opt/cibyp-overlay/desktop/session/cibyp-session ] && install -m 0755 /opt/cibyp-overlay/desktop/session/cibyp-session /usr/local/bin/cibyp-session
+  [ -f /opt/cibyp-overlay/desktop/session/cibyp-desktop-smoke ] && install -m 0755 /opt/cibyp-overlay/desktop/session/cibyp-desktop-smoke /usr/local/bin/cibyp-desktop-smoke
+  chmod 0755 /usr/local/bin/cibyp-* 2>/dev/null || true
+  if [ -f /opt/cibyp-overlay/desktop/config/sway/config ]; then
+    cp /opt/cibyp-overlay/desktop/config/sway/config /etc/cibyp/sway/config
+    install -d -m 0755 /etc/skel/.config/sway /home/cibyp/.config/sway
+    cp /etc/cibyp/sway/config /etc/skel/.config/sway/config
+    cp /etc/cibyp/sway/config /home/cibyp/.config/sway/config
+    chown -R cibyp:cibyp /home/cibyp/.config 2>/dev/null || true
+  fi
+  install -d -m 0755 /usr/share/applications
+  cp -a /opt/cibyp-overlay/desktop/applications/. /usr/share/applications/ 2>/dev/null || true
+  install -d -m 0755 /usr/share/wayland-sessions
+  cat > /usr/share/wayland-sessions/cibyp.desktop <<'EOF'
+[Desktop Entry]
+Name=CIBYP 桌面
+Comment=CIBYP 自研 Wayland 桌面（sway + 自研外壳）
+Exec=/usr/local/bin/cibyp-session
+Type=Application
+DesktopNames=CIBYP
+EOF
+fi
+
 # ---------------------------------------------------------------- 信息脚本
 cat > /usr/local/bin/cibyp-vmos-info <<'EOF'
 #!/bin/sh
@@ -264,6 +299,8 @@ echo "Architecture  : $(dpkg --print-architecture)"
 echo "Kernel        : $(uname -r)"
 echo "Cmdline       : $(cat /proc/cmdline)"
 echo "Workspace     : /workspace"
+echo "Desktop       : CIBYP 自研 Wayland 桌面（sway + cibyp-shell）"
+echo "远程桌面      : wayvnc（应用侧 VM 桌面窗口自动拉起）"
 echo "SSH user      : cibyp (key-only)"
 echo
 echo "本系统基于 Debian GNU/Linux 构建，与 Debian 项目无隶属关系。"

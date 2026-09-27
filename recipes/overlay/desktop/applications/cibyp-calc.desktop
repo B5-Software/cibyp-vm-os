@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=计算器
+Name[en]=Calculator
+Comment=计算器（自研）
+Exec=cibyp-calc
+Icon=accessories-calculator
+Terminal=false
+Categories=Utility;Calculator;
+StartupNotify=false

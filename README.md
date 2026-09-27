@@ -26,8 +26,8 @@
 | 变体 | 定位 | 体积门禁 | 磁盘 |
 |---|---|---|---|
 | `base` | Agent 默认执行环境：shell/python/node/编译基础 + 沙盒接入 | ≤ 520MB | 8G |
-| `desktop` | 图形化 / computer-use：base + Xorg + x11vnc + Chromium + CJK 字体 | ≤ 950MB | 12G |
-| `full` | 完整开发环境：base + clang/调试器 + PostgreSQL/MariaDB/Redis + Docker + ffmpeg + Playwright 依赖 | ≤ 1.6GB | 16G |
+| `desktop` | 图形化 / remote-desktop：base + **自研 Wayland 桌面**（sway + cibyp-shell/基础软件）+ wayvnc + Chromium | ≤ 950MB | 12G |
+| `full` | 完整开发环境：base + clang/调试器 + PostgreSQL/MariaDB/Redis + Docker + ffmpeg + Playwright 依赖 + **自研 Wayland 桌面** | ≤ 1.6GB | 16G |
 
 每个变体 × 架构（amd64/arm64）产出：
 
@@ -74,6 +74,29 @@ sudo -E env "PATH=$PATH" node tools/assemble-image.js \
   --version 0.1.0 --variant base --arch amd64 --size 8G
 node tests/boot-smoke.js --image out/cibyp-vmos-0.1.0-base-amd64.qcow2 \
   --kernel out/vmlinuz-amd64 --initrd out/initrd-amd64.img --arch amd64 --variant base
+```
+
+
+## 3.5 自研桌面环境（desktop / full 变体）
+
+**没有使用任何成品桌面环境**（GNOME/KDE/XFCE/MATE 等一律不装），桌面由本仓库自研：
+
+| 组成 | 实现 | 说明 |
+|---|---|---|
+| 合成器 | sway（wlroots） | 仅作 Wayland 基础设施：全浮动、无标题栏、靛蓝强调色；配置在 `overlay/desktop/config/sway/config` |
+| 桌面外壳 | `cibyp-shell` + `cibyp-desktop`（自研） | 面板（开始菜单/任务栏/时钟/快捷动作/电源）、开始菜单与应用搜索、日历卡片、电源卡片、提示条、桌面壁纸与右键菜单；GTK4 + gtk4-layer-shell |
+| 图标与壁纸 | 全部 Cairo 现画（自研） | `lib/cibypui.py`：20+ 线性图标、3 套壁纸（aurora/midnight/graphite）、品牌标记——**不依赖任何图标主题或图片资源** |
+| 基础软件 | `cibyp-files` / `cibyp-editor` / `cibyp-settings` / `cibyp-calc` / `cibyp-viewer` / `cibyp-about`（自研） | 文件管理器、文本编辑器、桌面设置、计算器、图片查看器、关于本机；文件菜单项见 `overlay/desktop/applications/` |
+| 远程桌面 | wayvnc（VNC）+ grim（截图） | 应用侧「VM 桌面窗口」经 SSH 端口转发直连；截图/录屏走 grim |
+| 输入与剪贴板 | ydotool（鼠标）/ wtype（键盘）/ wl-clipboard | 应用侧 computer-use（键鼠注入、剪贴板）在 VM 内生效，不触碰宿主 |
+| 会话 | `cibyp-session`（自研） | 无头（`WLR_BACKENDS=headless` + pixman）或真实显示均可；监督外壳进程；`/usr/share/wayland-sessions/cibyp.desktop` 供 display manager 识别 |
+| 快捷键 | Mod+Enter 终端 / Mod+D 菜单 / Mod+E 文件 / Print 截图 / Mod+Shift+Q 电源 / Mod+1..4 工作区 | 见 sway 配置 |
+
+CI 冒烟（`tests/boot-smoke.js`，desktop/full 变体）会**在 VM 内起完整桌面会话并截图**，校验分辨率、
+顶栏/壁纸渲染、开始菜单可打开，并把预览图作为产物发布：
+
+```
+预览图（稳定名）：https://github.com/B5-Software/cibyp-vm-os/releases/download/vm-os-latest/desktop-preview.png
 ```
 
 ## 4. 出厂契约（应用依赖的不变量）

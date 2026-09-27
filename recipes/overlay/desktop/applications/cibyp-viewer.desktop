@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=图片查看器
+Name[en]=Image Viewer
+Comment=图片浏览（自研）
+Exec=cibyp-viewer %U
+Icon=image-viewer
+Terminal=false
+Categories=Graphics;Viewer;
+StartupNotify=false

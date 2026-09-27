@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=文件
+Name[en]=Files
+Comment=浏览与管理文件（自研）
+Exec=cibyp-files %U
+Icon=system-file-manager
+Terminal=false
+Categories=System;FileManager;
+StartupNotify=false

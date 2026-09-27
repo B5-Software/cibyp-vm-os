@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# CIBYP 关于本机（自研）：品牌标记 + 系统/桌面版本信息 + 会话环境（Wayland/sway/分辨率）
+
+import os
+import platform
+import subprocess
+import sys
+
+for _p in ('/usr/local/lib/cibyp-desktop/lib', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import gi  # noqa: E402
+
+gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk  # noqa: E402
+
+import cibypui as ui  # noqa: E402
+
+
+def sh(cmd, default='—'):
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, timeout=3)
+        out = r.stdout.decode('utf-8', 'ignore').strip().splitlines()
+        return out[0] if out else default
+    except Exception:
+        return default
+
+
+def os_release():
+    info = {}
+    try:
+        with open('/etc/os-release', 'r', encoding='utf-8') as f:
+            for line in f:
+                if '=' in line:
+                    k, v = line.strip().split('=', 1)
+                    info[k] = v.strip('"')
+    except Exception:
+        pass
+    return info
+
+
+class AboutWindow(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title='关于本机')
+        self.set_name('cibyp-about')
+        self.set_default_size(560, 460)
+        ui.install_css()
+        osr = os_release()
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box.set_margin_top(22)
+        box.set_margin_bottom(22)
+        box.set_margin_start(26)
+        box.set_margin_end(26)
+        self.set_child(box)
+
+        head = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=16)
+        mark = Gtk.DrawingArea()
+        mark.set_content_width(72)
+        mark.set_content_height(72)
+        mark.set_draw_func(lambda _a, cr, w, h: ui.draw_brandmark(cr, 0, 0, min(w, h)))
+        head.append(mark)
+        titles = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        t1 = Gtk.Label(label='CIBYP 桌面')
+        t1.add_css_class('cibyp-title')
+        t1.set_halign(Gtk.Align.START)
+        t2 = Gtk.Label(label='Could I Be Your Partner · 自研 Wayland 桌面环境')
+        t2.add_css_class('cibyp-dim')
+        t2.set_halign(Gtk.Align.START)
+        titles.append(t1)
+        titles.append(t2)
+        head.append(titles)
+        box.append(head)
+
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        card.add_css_class('cibyp-card')
+        card.set_margin_top(4)
+        rows = [
+            ('系统', osr.get('PRETTY_NAME', 'CIBYP-VM-OS')),
+            ('发行版基础', f"Debian GNU/Linux {osr.get('VERSION_CODENAME', '')}"),
+            ('内核', platform.release()),
+            ('架构', platform.machine()),
+            ('会话', f"{os.environ.get('XDG_SESSION_TYPE', '—')} · {os.environ.get('XDG_CURRENT_DESKTOP', '—')}"),
+            ('显示服务器', sh("swaymsg -t get_version | head -1")),
+            ('输出分辨率', sh("wlr-randr | grep -oE '[0-9]+x[0-9]+' | head -1")),
+            ('桌面外壳', 'cibyp-shell（自研 · GTK4 + layer-shell）'),
+            ('工作区', '/workspace（与宿主双向同步）'),
+            ('许可', 'GPL-3.0-or-later'),
+        ]
+        for k, v in rows:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            row.set_margin_start(16)
+            row.set_margin_end(16)
+            row.set_margin_top(4)
+            row.set_margin_bottom(4)
+            kl = Gtk.Label(label=k)
+            kl.add_css_class('cibyp-dim')
+            kl.set_size_request(110, -1)
+            kl.set_halign(Gtk.Align.START)
+            vl = Gtk.Label(label=str(v))
+            vl.set_halign(Gtk.Align.START)
+            vl.set_wrap(True)
+            row.append(kl)
+            row.append(vl)
+            card.append(row)
+        card.set_margin_bottom(4)
+        box.append(card)
+
+        foot = Gtk.Label()
+        foot.set_markup('<span size="small">CIBYP-VM-OS 是基于 Debian GNU/Linux 的再分发系统（remix），与 Debian 项目无隶属关系。\n'
+                        'Debian 是 Software in the Public Interest, Inc. 的注册商标。</span>')
+        foot.add_css_class('cibyp-dim')
+        foot.set_wrap(True)
+        foot.set_justify(Gtk.Justification.CENTER)
+        box.append(foot)
+
+        close = Gtk.Button(label='关闭')
+        close.add_css_class('cibyp-btn')
+        close.set_halign(Gtk.Align.CENTER)
+        close.connect('clicked', lambda *_: self.close())
+        box.append(close)
+
+
+class AboutApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id='com.b5software.cibyp.about')
+
+    def do_activate(self):
+        w = AboutWindow(self)
+        w.present()
+
+
+if __name__ == '__main__':
+    sys.exit(AboutApp().run([]))

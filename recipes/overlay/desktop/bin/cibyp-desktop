@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# CIBYP 桌面（自研）：BACKGROUND 层壁纸 + 桌面快捷方式 + 右键菜单。
+# 壁纸由 Cairo 现画（无图片资源）；右键菜单为自研卡片式 Popover。
+
+import json
+import os
+import shlex
+import sys
+
+for _p in ('/usr/local/lib/cibyp-desktop/lib', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import gi  # noqa: E402
+
+gi.require_version('Gdk', '4.0')
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gtk4LayerShell', '1.0')
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
+
+import cibypui as ui  # noqa: E402
+
+CONFIG_FILE = os.path.expanduser('~/.config/cibyp/desktop.json')
+
+ACTIONS = [
+    ('terminal', '打开终端', ['foot']),
+    ('files', '文件管理器', ['cibyp-files']),
+    ('editor', '文本编辑器', ['cibyp-editor']),
+    ('folder', '工作区 /workspace', ['cibyp-files', '/workspace']),
+    ('settings', '桌面设置', ['cibyp-settings']),
+    ('refresh', '重新加载桌面', None),
+    ('info', '关于本机', ['cibyp-about']),
+]
+
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+class Desktop(Gtk.Window):
+    def __init__(self, app):
+        super().__init__(application=app)
+        self.set_name('cibyp-desktop')
+        self.set_decorated(False)
+        LayerShell.init_for_window(self)
+        LayerShell.set_layer(self, LayerShell.Layer.BACKGROUND)
+        LayerShell.set_namespace(self, 'cibyp-desktop')
+        for e in (LayerShell.Edge.TOP, LayerShell.Edge.BOTTOM, LayerShell.Edge.LEFT, LayerShell.Edge.RIGHT):
+            LayerShell.set_anchor(self, e, True)
+        LayerShell.set_exclusive_zone(self, -1)
+
+        self.cfg = load_config()
+        self.overlay = Gtk.Overlay()
+        self.set_child(self.overlay)
+
+        self.canvas = Gtk.DrawingArea()
+        self.canvas.set_draw_func(self._draw_wallpaper)
+        self.overlay.set_child(self.canvas)
+
+        # 桌面快捷方式（左上角，自绘图标 + 名称）
+        shortcuts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        shortcuts.set_halign(Gtk.Align.START)
+        shortcuts.set_valign(Gtk.Align.START)
+        shortcuts.set_margin_top(ui.panel_height() + 18)
+        shortcuts.set_margin_start(22)
+        for icon, label, cmd in (
+            ('folder', '工作区', ['cibyp-files', '/workspace']),
+            ('files', '主目录', ['cibyp-files', os.path.expanduser('~')]),
+            ('terminal', '终端', ['foot']),
+        ):
+            shortcuts.append(self._shortcut(icon, label, cmd))
+        self.overlay.add_overlay(shortcuts)
+
+        # 右键菜单
+        self.menu = None
+        click = Gtk.GestureClick()
+        click.set_button(3)
+        click.connect('pressed', self._on_right_click)
+        self.canvas.add_controller(click)
+
+        # 配置变化自动重绘（设置应用保存后 → 重启会话，这里也支持信号刷新）
+        try:
+            monitor = Gio.File.new_for_path(CONFIG_FILE).monitor_file(Gio.FileMonitorFlags.NONE, None)
+            monitor.connect('changed', lambda *_: self._reload())
+            self._monitor = monitor
+        except Exception:
+            self._monitor = None
+
+    def _reload(self):
+        self.cfg = load_config()
+        self.canvas.queue_draw()
+
+    def _draw_wallpaper(self, _area, cr, w, h):
+        ui.paint_wallpaper(cr, w, h, variant=self.cfg.get('wallpaper', 'aurora'))
+
+    def _shortcut(self, icon, label, cmd):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        box.add_css_class('cibyp-subcard')
+        box.set_size_request(92, 88)
+        area = Gtk.DrawingArea()
+        area.set_content_width(40)
+        area.set_content_height(40)
+        area.set_margin_top(9)
+        area.set_halign(Gtk.Align.CENTER)
+        area.set_draw_func(lambda _a, cr, w, h, ic=icon: ui.draw_icon(cr, ic, 0, 0, min(w, h), ui.TEXT))
+        box.append(area)
+        lbl = Gtk.Label(label=label)
+        lbl.add_css_class('cibyp-dim')
+        box.append(lbl)
+        click = Gtk.GestureClick()
+        click.connect('released', lambda _g, _n, _x, _y, c=cmd: ui.launch(c))
+        box.add_controller(click)
+        return box
+
+    def _on_right_click(self, _g, _n, x, y):
+        if self.menu is not None:
+            self.menu.unparent()
+            self.menu = None
+        pop = Gtk.Popover()
+        pop.set_has_arrow(False)
+        pop.set_pointing_to(Gdk.Rectangle(int(x), int(y), 1, 1))
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        box.add_css_class('cibyp-card')
+        box.set_margin_start(6)
+        box.set_margin_end(6)
+        box.set_margin_top(6)
+        box.set_margin_bottom(6)
+        for icon, label, cmd in ACTIONS:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=9)
+            row.add_css_class('cibyp-btn')
+            area = Gtk.DrawingArea()
+            area.set_content_width(19)
+            area.set_content_height(19)
+            area.set_draw_func(lambda _a, cr, w, h, ic=icon: ui.draw_icon(cr, ic, 0, 0, min(w, h),
+                                                                         ui.ACCENT2 if ic in ('terminal', 'folder') else ui.TEXT))
+            row.append(area)
+            lbl = Gtk.Label(label=label)
+            lbl.set_halign(Gtk.Align.START)
+            row.append(lbl)
+
+            def _activate(_g, _n, _x, _y, c=cmd, p=pop):
+                p.popdown()
+                if c is None:
+                    GLib.idle_add(lambda: (os._exit(0), False)[1])  # 由会话看守重启
+                else:
+                    ui.launch(c)
+            click = Gtk.GestureClick()
+            click.connect('released', _activate)
+            row.add_controller(click)
+            box.append(row)
+        pop.set_child(box)
+        pop.set_parent(self.canvas)
+        pop.popup()
+        self.menu = pop
+
+
+class DesktopApp(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id='com.b5software.cibyp.desktop')
+
+    def do_activate(self):
+        ui.install_css()
+        self.win = Desktop(self)
+        self.win.present()
+
+
+if __name__ == '__main__':
+    sys.exit(DesktopApp().run([]))

@@ -114,3 +114,34 @@ node scripts/vm-pack.js --src <qemu解包目录> --out <输出> --platform win32
 | 紧急按钮切回本机 | Splash「以本机模式启动（本次）」+ 失败 20s 自动回退 + 运行期可随时切 |
 | 图形化 VM / computer-use | VM 桌面窗口（noVNC）+ VM 内 Chromium CDP（Playwright 可 connectOverCDP） |
 | 不占安装包体积 | 全部运行时资源按需下载（QEMU 包 + 镜像 + 内核/initrd），走 aria2 + sha256 |
+
+
+## 第 4 轮（2026-09-27）：自研 Wayland 桌面（desktop / full）
+
+### 目标
+把 desktop/full 从「X11 + x11vnc + openbox」换成 **Wayland + 全自研桌面**：不要成品桌面环境，
+桌面/面板/菜单/图标/壁纸/基础软件全部自研；应用侧 VM 桌面窗口与 computer-use 同步切换。
+
+### 实现
+- 合成器：sway（全浮动/无标题栏/靛蓝主题；`config/sway/config`）
+- 自研外壳（`overlay/desktop/bin/`）：
+  - `cibyp-shell`：面板（品牌开始键、任务栏=sway IPC 窗口列表、时钟+日历、终端/文件/截图/电源）、
+    开始菜单（解析 .desktop + 应用搜索 + 应用网格）、电源卡片、右上角提示条；外部命令通道
+    `$XDG_RUNTIME_DIR/cibyp-shell.sock`（`cibypctl menu|calendar|power|screenshot|toast`）
+  - `cibyp-desktop`：BACKGROUND 层壁纸（Cairo 绘制 3 套变体）+ 桌面快捷方式 + 右键菜单
+  - `lib/cibypui.py`：设计令牌（深空底 + 靛蓝/青绿）、20+ 自绘线性图标、壁纸/品牌绘制、GTK4 CSS 主题
+- 基础软件（自研）：`cibyp-files`（文件管理器）、`cibyp-editor`（编辑器）、`cibyp-settings`
+  （壁纸/强调色/分辨率/系统信息）、`cibyp-calc`、`cibyp-viewer`、`cibyp-about`
+- 会话：`cibyp-session`（无头/真实显示均可，监督外壳，设置分辨率，清理 wayvnc）
+- 镜像侧：`recipes/desktop.yaml`、`recipes/full.yaml` 换为 Wayland 栈
+  （sway/wayvnc/grim/slurp/wlr-randr/wl-clipboard/ydotool/wtype/foot/python3-gi/python3-cairo/
+  gir1.2-gtk-4.0/gir1.2-gtk4layershell-1.0/adwaita-icon-theme/字体）；`overlay/setup.sh` 安装桌面负载、
+  sway 配置、.desktop、wayland-sessions 入口；`cibyp-vmos-info` 增补桌面信息
+- CI：`tests/boot-smoke.js` 新增桌面冒烟（组件齐备 / layer-shell 绑定 / 基础软件 / .desktop 数量 /
+  `cibyp-desktop-smoke` 无头会话 + 截图 + 开始菜单 / 预览图回传），workflow 增加预览图产物上传、
+  汇总与发布（含稳定名 `desktop-preview.png`）
+
+### 应用侧（主仓）
+- `src/main/vm/vm-graphics.js`：新增 Wayland 后端（自动探测 sway）——
+  启动 `cibyp-session`（或 sway）、wayvnc、grim 截图、wtype/ydotool 输入、wl-clipboard 剪贴板、
+  Chromium `--ozone-platform=wayland`；旧镜像（无 sway）自动回退 X11 路径

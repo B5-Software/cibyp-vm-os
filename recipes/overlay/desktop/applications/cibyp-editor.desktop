@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=文本编辑器
+Name[en]=Text Editor
+Comment=轻量文本编辑（自研）
+Exec=cibyp-editor %U
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;
+StartupNotify=false

@@ -1,0 +1,177 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# CIBYP 桌面冒烟（无头，供 CI 使用）
+#   1) 以 wlroots 无头后端启动完整桌面会话（sway + 自研外壳）
+#   2) 用 grim 截图（PPM），校验：分辨率正确 / 顶栏与壁纸亮度不同 / 面板存在
+#   3) 通过 cibypctl 打开开始菜单，再截图，校验画面确实变化
+#   4) 输出 PNG 预览（供 CI 产物/README），退出码 0=通过
+#
+# 用法：cibyp-desktop-smoke [--geometry 1280x800] [--out-png /tmp/cibyp-desktop.png]
+
+set -u
+
+GEOMETRY="1280x800"
+OUT_PNG="/tmp/cibyp-desktop.png"
+LOG="${TMPDIR:-/tmp}/cibyp-desktop-smoke-$(id -u).log"
+WORK="$(mktemp -d /tmp/cibyp-smoke-XXXXXX)"
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --geometry) GEOMETRY="$2"; shift 2 ;;
+    --out-png) OUT_PNG="$2"; shift 2 ;;
+    *) echo "未知参数: $1" >&2; exit 2 ;;
+  esac
+done
+
+FAIL=0
+pass() { echo "  PASS  $*"; }
+fail() { echo "  FAIL  $*"; FAIL=$((FAIL + 1)); }
+
+# 防御：外部若注入 LD_PRELOAD（会破坏 sway/bash），在本脚本内清掉
+unset LD_PRELOAD
+
+export WLR_BACKENDS="${WLR_BACKENDS:-headless}"
+export WLR_HEADLESS_OUTPUTS="${WLR_HEADLESS_OUTPUTS:-1}"
+export WLR_RENDERER="${WLR_RENDERER:-pixman}"
+export WLR_LIBINPUT_NO_DEVICES=1
+export CIBYP_GEOMETRY="$GEOMETRY"
+# 注意：这里绝不能导出 LD_PRELOAD —— 会让本次启动的会话 bash 预加载 GTK 库而静默崩溃。
+# layer-shell 预加载由 cibyp-session 在会话内部完成（子进程继承）。
+export CIBYP_LOG="$LOG"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/cibyp-runtime-$(id -u)}"
+
+cleanup() {
+  pkill -f 'cibyp-session' 2>/dev/null || true
+  pkill -f 'cibyp-shell' 2>/dev/null || true
+  pkill -f 'cibyp-desktop' 2>/dev/null || true
+  pkill -f 'sway --config' 2>/dev/null || true
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+echo "== CIBYP 桌面冒烟（$GEOMETRY，无头 Wayland）=="
+
+# 清理当前用户的残留会话与 socket（按进程名精确匹配，避免误杀自己）
+self_pid=$
+_myuid="$(id -u)"
+for _cmd in cibyp-shell cibyp-desktop wayvnc sway ydotoold; do
+  for _p in $(pgrep -u "$_myuid" -x "$_cmd" 2>/dev/null || true); do
+    [ "$_p" = "$self_pid" ] && continue
+    kill "$_p" 2>/dev/null || true
+  done
+done
+sleep 0.4
+rm -f "${XDG_RUNTIME_DIR:-/tmp}"/wayland-* "${XDG_RUNTIME_DIR:-/tmp}"/sway-ipc.*.sock 2>/dev/null || true
+command -v sway >/dev/null || { fail "sway 未安装"; exit 1; }
+command -v grim >/dev/null || { fail "grim 未安装"; exit 1; }
+command -v wlr-randr >/dev/null || echo "  提示：wlr-randr 缺失（将回退 swaymsg 设置分辨率）"
+
+setsid nohup /usr/local/bin/cibyp-session >>"$LOG" 2>&1 </dev/null &
+SESSION_PID=$!
+echo "  会话已启动 pid=$SESSION_PID，等待 sway…"
+
+ready=0
+for _ in $(seq 1 140); do
+  sock="$(ls -t "$XDG_RUNTIME_DIR"/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
+  wl="$(ls -t "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | head -1 || true)"
+  if [ -n "$sock" ] && [ -n "$wl" ]; then
+    export SWAYSOCK="$sock"
+    export WAYLAND_DISPLAY="$(basename "$wl")"
+    ready=1; break
+  fi
+  sleep 0.25
+done
+[ "$ready" = 1 ] || { fail "sway 未在 35s 内就绪（见 $LOG）"; echo '--- 会话日志 ---'; tail -30 "$LOG" 2>/dev/null; exit 1; }
+pass "sway 就绪（SWAYSOCK=${SWAYSOCK##*/} WAYLAND_DISPLAY=$WAYLAND_DISPLAY）"
+
+# 等外壳进程出现
+shell_ok=0
+for _ in $(seq 1 80); do
+  if pgrep -f 'cibyp-shell' >/dev/null 2>&1 && pgrep -f 'cibyp-desktop' >/dev/null 2>&1; then shell_ok=1; break; fi
+  sleep 0.25
+done
+[ "$shell_ok" = 1 ] || { fail "自研外壳未启动（见 $LOG）"; tail -30 "$LOG"; exit 1; }
+pass "自研外壳已启动（cibyp-shell + cibyp-desktop）"
+
+sleep 2
+
+# 截图 1
+PPM1="$WORK/shot1.ppm"
+if grim -t ppm "$PPM1" >/dev/null 2>&1 && [ -s "$PPM1" ]; then
+  pass "grim 截图成功（$(stat -c %s "$PPM1") 字节）"
+else
+  fail "grim 截图失败"; exit 1
+fi
+
+python3 - "$PPM1" "$GEOMETRY" <<'PY' && pass "截图校验通过（分辨率/顶栏/壁纸）" || fail "截图校验失败"
+import sys
+path, geom = sys.argv[1], sys.argv[2]
+with open(path, 'rb') as f:
+    data = f.read()
+if not data.startswith(b'P6'):
+    print('  不是 P6 PPM'); sys.exit(1)
+# 解析头
+parts = []
+i = 0
+while len(parts) < 4:
+    # 跳过空白与注释
+    while data[i:i+1].isspace():
+        i += 1
+    if data[i:i+1] == b'#':
+        while data[i:i+1] != b'\n':
+            i += 1
+        continue
+    j = i
+    while not data[j:j+1].isspace():
+        j += 1
+    parts.append(data[i:j])
+    i = j
+w, h = int(parts[1]), int(parts[2])
+i += 1  # 单个空白
+exp = geom.split('x')
+if (w, h) != (int(exp[0]), int(exp[1])):
+    print(f'  分辨率不符：{w}x{h} != {geom}'); sys.exit(1)
+px = data[i:]
+
+def lum(x, y):
+    idx = (y * w + x) * 3
+    r, g, b = px[idx], px[idx+1], px[idx+2]
+    return 0.2126*r + 0.7152*g + 0.0722*b
+
+# 顶栏采样（面板：深色不透明） 与 桌面中部采样（壁纸：极光更亮）
+panel = sum(lum(x, 19) for x in range(20, min(w, 900), 20)) / len(range(20, min(w, 900), 20))
+mid = sum(lum(x, h // 2) for x in range(20, min(w, 900), 20)) / len(range(20, min(w, 900), 20))
+print(f'  面板亮度={panel:.1f} 壁纸亮度={mid:.1f} 尺寸={w}x{h}')
+if panel >= mid:
+    print('  顶栏未呈现深色面板（自研面板可能未渲染）'); sys.exit(1)
+if mid < 6:
+    print('  壁纸过暗，疑似未绘制'); sys.exit(1)
+sys.exit(0)
+PY
+
+# 开始菜单：cibypctl 打开 → 截图 2 → 画面应变化
+if command -v cibypctl >/dev/null 2>&1 && cibypctl menu >/dev/null 2>&1; then
+  pass "cibypctl menu 已发送"
+  sleep 1.2
+  PPM2="$WORK/shot2.ppm"
+  grim -t ppm "$PPM2" >/dev/null 2>&1 || true
+  if [ -s "$PPM2" ] && ! cmp -s "$PPM1" "$PPM2"; then
+    pass "开始菜单已渲染（画面发生变化）"
+  else
+    fail "开始菜单未生效（两次截图相同）"
+  fi
+else
+  fail "cibypctl 不可用或未连接外壳"
+fi
+
+# 输出 PNG 预览
+if grim "$OUT_PNG" >/dev/null 2>&1 && [ -s "$OUT_PNG" ]; then
+  pass "预览图已生成：$OUT_PNG（$(stat -c %s "$OUT_PNG") 字节）"
+else
+  fail "预览图生成失败"
+fi
+
+echo "== 结果：$([ "$FAIL" = 0 ] && echo 全部通过 || echo "$FAIL 项失败") =="
+exit $([ "$FAIL" = 0 ] && echo 0 || echo 1)

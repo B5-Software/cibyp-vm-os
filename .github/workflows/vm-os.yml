@@ -146,6 +146,16 @@ jobs:
             --variant "${{ matrix.variant }}" \
             --work "$RUNNER_TEMP/vmos-smoke-${{ matrix.variant }}-${{ matrix.arch }}"
 
+      - name: 上传桌面预览图（desktop/full 变体）
+        if: matrix.variant != 'base'
+        uses: actions/upload-artifact@v7
+        with:
+          name: vmos-desktop-preview-${{ matrix.variant }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/vmos-smoke-${{ matrix.variant }}-${{ matrix.arch }}/cibyp-vmos-*-desktop.png
+            ${{ runner.temp }}/vmos-smoke-${{ matrix.variant }}-${{ matrix.arch }}/desktop-preview.png
+          if-no-files-found: error
+
       - name: 上传产物
         uses: actions/upload-artifact@v7
         with:
@@ -176,6 +186,13 @@ jobs:
           merge-multiple: true
           pattern: vmos-*
 
+      - name: 汇总桌面预览图
+        uses: actions/download-artifact@v8
+        with:
+          path: vm-os-out
+          merge-multiple: true
+          pattern: vmos-desktop-preview-*
+
       - name: 生成 runtime-manifest.json（含体积门禁）
         env:
           VMOS_VERSION: ${{ needs.version.outputs.value }}
@@ -200,6 +217,8 @@ jobs:
           CIBYP-VM-OS is not affiliated with or endorsed by the Debian project.
           
           资产说明：每个变体 × 架构一份 qcow2（base/desktop/full）+ 内核/initrd（宿主 QEMU 直接引导）。
+          desktop/full 变体内置自研 Wayland 桌面（sway + cibyp-shell/基础软件 + wayvnc）；
+          预览图：cibyp-vmos-<版本>-desktop-amd64-desktop.png（稳定名 desktop-preview.png）。
           清单：runtime-manifest.json（含 sha256、大小、体积门禁与兼容性信息）。"
           if ! gh release view vm-os-latest >/dev/null 2>&1; then
             gh release create vm-os-latest --title "CIBYP-VM-OS (latest)" --notes "$NOTES" --target "$GITHUB_SHA"
@@ -208,7 +227,7 @@ jobs:
           fi
           gh release view vm-os-latest --json assets -q '.assets[].name' | while read -r name; do
             case "$name" in
-              *"${VMOS_VERSION}"*|runtime-manifest.json) ;;
+              *"${VMOS_VERSION}"*|runtime-manifest.json|desktop-preview.png) ;;
               *) gh release delete-asset vm-os-latest "$name" -y || true ;;
             esac
           done

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=设置
+Name[en]=Settings
+Comment=桌面外观与系统设置（自研）
+Exec=cibyp-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;System;
+StartupNotify=false

@@ -1,0 +1,474 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (c) 2026 B5-Software
+#
+# cibyp-calc —— CIBYP 桌面「计算器」（自研，GTK4 + Cairo，无第三方图标/主题资源）
+#
+# 功能：
+#   - 数字 0-9、+ - * / % . = C ⌫ 与括号按钮，等号键横跨整行
+#   - 键盘直接输入，回车求值，Esc 清空
+#   - 表达式安全求值：ast 白名单（仅数字/括号/四则/取模/一元正负），不使用 eval 内置
+#   - 历史记录列表（最近 20 条，内存保存），点击可回填表达式
+#
+# 依赖：python3-gi + GTK4（其余仅标准库）。
+
+import ast
+import operator
+import os
+import sys
+
+# ---- 共享绘制库路径（镜像内 /usr/local 与开发树 ../lib 均可） ----
+for _p in ('/usr/local/lib/cibyp-desktop/lib',
+           os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Gdk', '4.0')
+
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+
+import cibypui  # noqa: E402
+
+APP_ID = 'com.b5software.cibyp.calc'
+WINDOW_NAME = 'cibyp-calc'
+MAX_EXPR_LEN = 256
+HISTORY_LIMIT = 20
+
+LOCAL_CSS = b"""
+window.cibyp-app { background: rgb(11, 15, 26); }
+.cibyp-statusbar { background: rgba(15, 20, 33, 0.90); border-top: 1px solid rgba(255, 255, 255, 0.06); }
+.cibyp-panel-side { background: rgba(15, 20, 33, 0.55); border-left: 1px solid rgba(255, 255, 255, 0.06); }
+.cibyp-display { font-size: 20pt; min-height: 46px; }
+.cibyp-key {
+  min-height: 46px;
+  font-size: 13pt;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+}
+.cibyp-key:hover { background: rgba(255, 255, 255, 0.11); }
+.cibyp-key-op { background: rgba(124, 107, 255, 0.16); }
+.cibyp-key-eq { background: rgba(124, 107, 255, 0.35); }
+.cibyp-key-danger { background: rgba(255, 107, 129, 0.16); }
+.cibyp-danger { color: rgb(255, 107, 129); }
+.cibyp-ok { color: rgb(77, 214, 193); }
+.cibyp-history-title { font-size: 11pt; font-weight: 700; }
+"""
+
+
+# ------------------------------------------------------------------ 纯逻辑函数
+# 以下函数不依赖 GUI，可用 python3 -c 单独验证。
+
+class EvalError(ValueError):
+    """表达式求值错误（中文消息）"""
+
+
+_BIN_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+}
+_UNARY_OPS = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+
+def normalize_expr(expr):
+    """把常见全角/符号写法归一化为 ASCII 运算符"""
+    return (expr.replace('×', '*').replace('÷', '/').replace('−', '-')
+            .replace('—', '-').replace('（', '(').replace('）', ')'))
+
+
+def _eval_node(node):
+    if isinstance(node, ast.Expression):
+        return _eval_node(node.body)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            raise EvalError('表达式只允许数字')
+        return node.value
+    if isinstance(node, ast.BinOp):
+        func = _BIN_OPS.get(type(node.op))
+        if func is None:
+            raise EvalError('不支持的运算符')
+        left = _eval_node(node.left)
+        right = _eval_node(node.right)
+        if isinstance(node.op, (ast.Div, ast.Mod)) and right == 0:
+            raise EvalError('除数不能为零')
+        try:
+            return func(left, right)
+        except OverflowError:
+            raise EvalError('结果超出范围') from None
+    if isinstance(node, ast.UnaryOp):
+        func = _UNARY_OPS.get(type(node.op))
+        if func is None:
+            raise EvalError('不支持的一元运算符')
+        return func(_eval_node(node.operand))
+    raise EvalError('表达式包含不允许的内容')
+
+
+def safe_eval(expr):
+    """安全求值：仅允许数字、括号、+ - * / % 与一元正负号（不用 eval 内置）"""
+    text = normalize_expr(expr).strip()
+    if not text:
+        raise EvalError('表达式为空')
+    if len(text) > MAX_EXPR_LEN:
+        raise EvalError('表达式过长')
+    try:
+        tree = ast.parse(text, mode='eval')
+    except SyntaxError:
+        raise EvalError('语法错误，请检查括号或运算符') from None
+    return _eval_node(tree)
+
+
+def format_number(value):
+    """结果格式化：整数去掉小数点，浮点保留 12 位有效数字"""
+    if isinstance(value, bool):
+        raise EvalError('结果不是数字')
+    if isinstance(value, int):
+        return str(value)
+    if value != value:
+        raise EvalError('结果不是有效数字')
+    if value in (float('inf'), float('-inf')):
+        raise EvalError('结果超出可表示范围')
+    if abs(value) < 1e16 and value == int(value):
+        return str(int(value))
+    return f'{value:.12g}'
+
+
+def push_history(history, expr, result, limit=HISTORY_LIMIT):
+    """把 (表达式, 结果) 插入历史头部并裁剪到 limit 条（纯函数，返回新列表）"""
+    items = [(expr, result)] + [(e, r) for e, r in history if not (e == expr and r == result)]
+    return items[:limit]
+
+
+# ------------------------------------------------------------------ 小工具
+
+def install_local_css():
+    provider = Gtk.CssProvider()
+    provider.load_from_data(LOCAL_CSS)
+    display = Gdk.Display.get_default()
+    if display is not None:
+        Gtk.StyleContext.add_provider_for_display(
+            display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+
+def make_icon(name, size=18, color=None, stroke=1.9):
+    col = color or cibypui.TEXT
+
+    def _draw(_area, cr, w, h, _data):
+        cibypui.draw_icon(cr, name, 0, 0, min(w, h), col, stroke)
+
+    area = Gtk.DrawingArea()
+    area.set_content_width(size)
+    area.set_content_height(size)
+    area.set_draw_func(_draw, None)
+    return area
+
+
+def label(text, css=None, xalign=0.0):
+    lbl = Gtk.Label(label=text, xalign=xalign)
+    if css:
+        lbl.add_css_class(css)
+    return lbl
+
+
+def pad(widget, margin):
+    widget.set_margin_top(margin)
+    widget.set_margin_bottom(margin)
+    widget.set_margin_start(margin)
+    widget.set_margin_end(margin)
+    return widget
+
+
+# ------------------------------------------------------------------ 主窗口
+
+class CalcWindow(Gtk.ApplicationWindow):
+
+    def __init__(self, app):
+        super().__init__(application=app, title='计算器')
+        self.set_name(WINDOW_NAME)
+        self.add_css_class('cibyp-app')
+        self.set_default_size(860, 580)
+
+        self.history = []
+
+        self._build_header()
+        self._build_body()
+        self._update_history()
+
+        key = Gtk.EventControllerKey()
+        key.connect('key-pressed', self._on_key_pressed)
+        self.add_controller(key)
+
+    # --------------------------------------------------------- 界面搭建
+
+    def _build_header(self):
+        header = Gtk.HeaderBar()
+        header.add_css_class('cibyp-panel')
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        title_box.append(make_icon('calc', 16))
+        title_box.append(label('计算器', 'cibyp-title'))
+        header.set_title_widget(title_box)
+        self.set_titlebar(header)
+
+    def _build_body(self):
+        root = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.set_child(root)
+
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        pad(left, 14)
+        left.set_hexpand(True)
+        left.append(self._build_display())
+        left.append(self._build_keypad())
+        left.append(self._build_statusbar())
+        root.append(left)
+        root.append(self._build_history_panel())
+
+    def _build_display(self):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.display = Gtk.Entry()
+        self.display.add_css_class('cibyp-entry')
+        self.display.add_css_class('cibyp-mono')
+        self.display.add_css_class('cibyp-display')
+        self.display.set_alignment(1.0)
+        self.display.set_placeholder_text('输入表达式，例如 (1+2)*3')
+        self.display.connect('activate', lambda *_a: self.evaluate())
+        box.append(self.display)
+
+        self.error_label = label('', 'cibyp-dim')
+        self.error_label.set_wrap(True)
+        box.append(self.error_label)
+        return box
+
+    def _build_keypad(self):
+        grid = Gtk.Grid()
+        grid.set_row_spacing(8)
+        grid.set_column_spacing(8)
+        grid.set_hexpand(True)
+        grid.set_vexpand(True)
+
+        layout = (
+            ('C', 0, 0, 'danger', self.clear_all),
+            ('backspace', 1, 0, 'normal', self.backspace),
+            ('(', 2, 0, 'op', lambda: self.insert_text('(')),
+            (')', 3, 0, 'op', lambda: self.insert_text(')')),
+            ('7', 0, 1, 'normal', lambda: self.insert_text('7')),
+            ('8', 1, 1, 'normal', lambda: self.insert_text('8')),
+            ('9', 2, 1, 'normal', lambda: self.insert_text('9')),
+            ('/', 3, 1, 'op', lambda: self.insert_text('/')),
+            ('4', 0, 2, 'normal', lambda: self.insert_text('4')),
+            ('5', 1, 2, 'normal', lambda: self.insert_text('5')),
+            ('6', 2, 2, 'normal', lambda: self.insert_text('6')),
+            ('*', 3, 2, 'op', lambda: self.insert_text('*')),
+            ('1', 0, 3, 'normal', lambda: self.insert_text('1')),
+            ('2', 1, 3, 'normal', lambda: self.insert_text('2')),
+            ('3', 2, 3, 'normal', lambda: self.insert_text('3')),
+            ('-', 3, 3, 'op', lambda: self.insert_text('-')),
+            ('0', 0, 4, 'normal', lambda: self.insert_text('0')),
+            ('.', 1, 4, 'normal', lambda: self.insert_text('.')),
+            ('%', 2, 4, 'normal', lambda: self.insert_text('%')),
+            ('+', 3, 4, 'op', lambda: self.insert_text('+')),
+        )
+        for text, col, row, style, callback in layout:
+            if text == 'backspace':
+                button = self._make_icon_key('back', callback)
+            else:
+                button = self._make_key(text, style, callback)
+            grid.attach(button, col, row, 1, 1)
+
+        equal = self._make_key('=', 'eq', self.evaluate)
+        grid.attach(equal, 0, 5, 4, 1)
+        return grid
+
+    def _make_icon_key(self, icon, callback):
+        button = Gtk.Button()
+        button.add_css_class('cibyp-btn')
+        button.add_css_class('cibyp-key')
+        button.set_child(make_icon(icon, 18))
+        button.set_tooltip_text('退格')
+        button.set_focus_on_click(False)
+        button.connect('clicked', lambda *_a: callback())
+        return button
+
+    def _make_key(self, text, style, callback):
+        button = Gtk.Button(label=text)
+        button.add_css_class('cibyp-btn')
+        button.add_css_class('cibyp-key')
+        if style == 'op':
+            button.add_css_class('cibyp-key-op')
+        elif style == 'eq':
+            button.add_css_class('cibyp-key-eq')
+        elif style == 'danger':
+            button.add_css_class('cibyp-key-danger')
+        button.set_focus_on_click(False)
+        button.connect('clicked', lambda *_a: callback())
+        return button
+
+    def _build_statusbar(self):
+        bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        bar.add_css_class('cibyp-statusbar')
+        self.status_label = label('就绪 · 键盘可直接输入，回车求值，Esc 清空', 'cibyp-dim')
+        self.status_label.set_hexpand(True)
+        bar.append(self.status_label)
+        return pad(bar, 5)
+
+    def _build_history_panel(self):
+        panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        panel.add_css_class('cibyp-panel-side')
+        panel.set_size_request(260, -1)
+        pad(panel, 10)
+        panel.append(label('历史记录（最近 20 条）', 'cibyp-history-title'))
+
+        self.history_box = Gtk.ListBox()
+        self.history_box.add_css_class('cibyp-list')
+        self.history_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.history_box.connect('row-activated', self._on_history_activated)
+
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_child(self.history_box)
+        scroll.set_vexpand(True)
+        panel.append(scroll)
+
+        clear = Gtk.Button(label='清空历史')
+        clear.add_css_class('cibyp-btn')
+        clear.connect('clicked', lambda *_a: self.clear_history())
+        panel.append(clear)
+        return panel
+
+    # --------------------------------------------------------- 输入与求值
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, _state):
+        """Esc 清空（键盘输入本身由输入框处理）"""
+        if keyval == Gdk.KEY_Escape:
+            self.clear_all()
+            return True
+        return False
+
+    def insert_text(self, text):
+        self.error_label.set_text('')
+        self.error_label.remove_css_class('cibyp-danger')
+        position = self.display.get_position()
+        self.display.insert_text(text, position)
+        self.display.set_position(position + len(text))
+        self.display.grab_focus()
+
+    def backspace(self):
+        text = self.display.get_text()
+        if not text:
+            return
+        position = self.display.get_position()
+        if position <= 0:
+            return
+        self.display.delete_text(position - 1, position)
+        self.display.set_position(position - 1)
+        self.display.grab_focus()
+
+    def clear_all(self):
+        self.display.set_text('')
+        self.display.set_position(0)
+        self.error_label.set_text('')
+        self.error_label.remove_css_class('cibyp-danger')
+        self.status_label.set_text('就绪 · 键盘可直接输入，回车求值，Esc 清空')
+        self.status_label.remove_css_class('cibyp-danger')
+        self.status_label.remove_css_class('cibyp-ok')
+        self.display.grab_focus()
+
+    def evaluate(self):
+        expression = self.display.get_text().strip()
+        if not expression:
+            self._show_error('请先输入表达式')
+            return
+        try:
+            value = safe_eval(expression)
+            result = format_number(value)
+        except EvalError as exc:
+            self._show_error(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 —— 兜底，绝不崩溃
+            self._show_error(f'计算失败：{exc}')
+            return
+
+        self.display.set_text(result)
+        self.display.set_position(-1)
+        self.error_label.set_text('')
+        self.error_label.remove_css_class('cibyp-danger')
+        self.status_label.set_text(f'{expression} = {result}')
+        self.status_label.remove_css_class('cibyp-danger')
+        self.status_label.add_css_class('cibyp-ok')
+        self.history = push_history(self.history, expression, result)
+        self._update_history()
+        self.display.grab_focus()
+
+    def _show_error(self, message):
+        self.error_label.set_text(f'错误：{message}')
+        self.error_label.add_css_class('cibyp-danger')
+        self.status_label.set_text(f'错误：{message}')
+        self.status_label.add_css_class('cibyp-danger')
+        self.status_label.remove_css_class('cibyp-ok')
+        self.display.set_position(-1)   # 错误后光标回到末尾，继续输入即追加
+
+    # --------------------------------------------------------- 历史记录
+
+    def _update_history(self):
+        while self.history_box.get_first_child() is not None:
+            self.history_box.remove(self.history_box.get_first_child())
+        if not self.history:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_child(label('（暂无记录）', 'cibyp-dim'))
+            self.history_box.append(row)
+            return
+        for expr, result in self.history:
+            row = Gtk.ListBoxRow()
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+            pad(box, 6)
+            expr_label = label(expr, 'cibyp-dim')
+            expr_label.set_ellipsize(3)
+            result_label = label(f'= {result}')
+            box.append(expr_label)
+            box.append(result_label)
+            row.set_child(box)
+            row.expr = expr
+            self.history_box.append(row)
+
+    def _on_history_activated(self, _box, row):
+        expr = getattr(row, 'expr', None)
+        if expr:
+            self.display.set_text(expr)
+            self.display.set_position(-1)
+            self.display.grab_focus()
+
+    def clear_history(self):
+        self.history = []
+        self._update_history()
+        self.status_label.set_text('历史记录已清空')
+        self.status_label.remove_css_class('cibyp-danger')
+
+
+# ------------------------------------------------------------------ 应用
+
+class CalcApp(Gtk.Application):
+
+    def __init__(self):
+        super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
+
+    def do_activate(self):
+        try:
+            cibypui.install_css()
+            install_local_css()
+            win = CalcWindow(self)
+            win.present()
+        except Exception as exc:  # noqa: BLE001
+            print(f'cibyp-calc: 启动失败: {exc}', file=sys.stderr)
+
+
+def main():
+    return CalcApp().run([sys.argv[0]])
+
+
+if __name__ == '__main__':
+    sys.exit(main())

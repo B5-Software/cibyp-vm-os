@@ -2,7 +2,7 @@
 # Copyright (c) 2026 B5-Software
 #
 # CIBYP-VM-OS「desktop」变体：图形化 / computer-use / 浏览器沙盒。
-# base + X11 + x11vnc + Chromium（宿主可用 CDP 跨网接管浏览器）。
+# base + sway(Wayland) + 自研桌面（cibyp-shell/cibyp-desktop + 基础软件） + wayvnc + Chromium（CDP）。
 # 目标体积 ≤ 750MB（qcow2, zstd）。
 
 {{- $arch := or .architecture "amd64" }}
@@ -19,32 +19,46 @@ actions:
       variant: {{$variant}}
       version: {{$version}}
 
-  # 图形栈：Xorg + x11vnc + 轻量 WM（无 systemd 图形会话依赖，适合 headless VM）
+  # 图形栈：Wayland（sway 合成器 + wayvnc + grim + wl-clipboard + ydotool/wtype）
+  # 说明：自研桌面外壳与基础软件见 recipes/overlay/desktop（setup.sh 安装到镜像）
   - action: apt
     packages:
-      - xserver-xorg
-      - xserver-xorg-video-dummy
-      - xinit
-      - x11-utils
-      - x11vnc
-      - openbox
-      - xterm
-      - xdotool
-      - xauth
+      - sway
+      - swaybg
+      - wayvnc
+      - grim
+      - slurp
+      - wlr-randr
+      - wl-clipboard
+      - ydotool
+      - wtype
+      - foot
       - dbus-x11
+      - xdg-utils
+      - xdg-desktop-portal-wlr
       - at-spi2-core
       - libgl1-mesa-dri
       - mesa-utils
 
-  # 浏览器与字体（computer-use / 网页自动化 / 截图）
+  # 自研桌面运行时（GTK4 + PyGObject + layer-shell；不含任何成品桌面环境/面板）
   - action: apt
     packages:
-      - chromium
+      - python3-gi
+      - python3-gi-cairo
+      - python3-cairo
+      - gir1.2-gtk-4.0
+      - gir1.2-gtk4layershell-1.0
+      - libgtk4-layer-shell0
+      - adwaita-icon-theme
       - fonts-noto-cjk
       - fonts-noto-color-emoji
       - fonts-wqy-zenhei
       - fonts-dejavu-core
-      - imagemagick
+
+  # 浏览器（computer-use / 网页自动化，经 CDP 由应用接管）
+  - action: apt
+    packages:
+      - chromium
 
   - action: recipe
     recipe: tail.yaml
