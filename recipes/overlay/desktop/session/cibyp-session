@@ -121,9 +121,10 @@ for out_name in $(swaymsg -t get_outputs 2>/dev/null | grep -o '"name": "[^"]*"'
 done
 
 start_shell() {
-  # 记录退出码：外壳若崩溃，下一轮 CI 诊断能直接看到原因与 code
-  ( /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-desktop 退出 code=$?" >>"$LOG" ) &
-  ( /usr/local/bin/cibyp-shell >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-shell 退出 code=$?" >>"$LOG" ) &
+  # 用 python3 -u 启动（无缓冲）：应用若异常退出，退出前的输出一定能落到日志里；
+  # 同时记录退出码，便于 CI 诊断直接定位
+  ( python3 -u /usr/local/bin/cibyp-desktop >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-desktop 退出 code=$?" >>"$LOG" ) &
+  ( python3 -u /usr/local/bin/cibyp-shell >>"$LOG" 2>&1; echo "[cibyp-session] cibyp-shell 退出 code=$?" >>"$LOG" ) &
   log "外壳已启动：cibyp-desktop + cibyp-shell"
 }
 start_shell
