@@ -1,0 +1,5 @@
+
+
+# Python 编译缓存（本地检查 py_compile 产生）
+__pycache__/
+*.pyc
