@@ -684,6 +684,11 @@ class ShellApp(Gtk.Application):
         self.toast = None
 
     def do_activate(self):
+        # 桌面外壳必须常驻：Gtk.Application 在所有窗口关闭时会自动退出（0），
+        # 而 layer-shell 表面的创建时序在某些环境（CI 的 QEMU VM）会让它误判
+        # → 用 hold() 显式阻止退出（不调用 release，语义即"随会话生命周期运行"）
+        self.hold()
+        print('cibyp-shell: 启动（panel/menu/desktop layer）', file=sys.stderr, flush=True)
         ui.install_css()
         self.panel = Panel(self)
         self.menu = StartMenu(self)

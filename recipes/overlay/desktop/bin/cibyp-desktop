@@ -182,6 +182,9 @@ class DesktopApp(Gtk.Application):
         super().__init__(application_id='com.b5software.cibyp.desktop')
 
     def do_activate(self):
+        # 同 cibyp-shell：桌面壁纸层必须常驻，hold() 阻止应用因"没有可见窗口"而退出
+        self.hold()
+        print('cibyp-desktop: 启动（壁纸 + 桌面右键）', file=sys.stderr, flush=True)
         ui.install_css()
         self.win = Desktop(self)
         self.win.present()
