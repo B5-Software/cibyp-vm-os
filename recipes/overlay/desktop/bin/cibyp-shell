@@ -36,6 +36,23 @@ from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
 import cibypui as ui  # noqa: E402
 
+def single_instance_guard(name):
+    """单实例锁：同一用户下重复拉起直接退出（避免双面板/双桌面层）。"""
+    import fcntl
+    rt = os.environ.get('XDG_RUNTIME_DIR', '/tmp')
+    try:
+        os.makedirs(rt, exist_ok=True)
+        lock_path = os.path.join(rt, 'cibyp-' + name + '.lock')
+        fh = open(lock_path, 'w')
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        globals()['_instance_lock_fh'] = fh   # 持有引用，进程存活期间不释放
+        return True
+    except Exception:
+        return False
+
+
 CONFIG_DIR = os.path.expanduser('~/.config/cibyp')
 CONFIG_FILE = os.path.join(CONFIG_DIR, 'desktop.json')
 SOCKET_PATH = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'cibyp-shell.sock')
@@ -295,6 +312,15 @@ class Panel(Gtk.Window):
         return True
 
     def _tick_tasks(self):
+        try:
+            return self._tick_tasks_inner()
+        except Exception as exc:  # noqa: BLE001 —— 定时器不能因一次异常停摆
+            if not getattr(self, '_task_err_logged', False):
+                self._task_err_logged = True
+                print('cibyp-shell: 任务栏刷新异常:', exc, file=sys.stderr)
+            return True
+
+    def _tick_tasks_inner(self):
         app = self.get_application()
         if os.environ.get('SWAYSOCK'):
             tree = sway_tree()
@@ -736,6 +762,9 @@ class ShellApp(Gtk.Application):
 
 
 def main():
+    if not single_instance_guard('cibyp-shell'):
+        print('cibyp-shell: 已有一个实例在运行，退出', file=sys.stderr)
+        return 0
     app = ShellApp()
     return app.run([])
 

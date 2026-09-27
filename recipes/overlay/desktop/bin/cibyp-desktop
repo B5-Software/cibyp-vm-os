@@ -24,6 +24,23 @@ from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
 
 import cibypui as ui  # noqa: E402
 
+def single_instance_guard(name):
+    """单实例锁：同一用户下重复拉起直接退出（避免双面板/双桌面层）。"""
+    import fcntl
+    rt = os.environ.get('XDG_RUNTIME_DIR', '/tmp')
+    try:
+        os.makedirs(rt, exist_ok=True)
+        lock_path = os.path.join(rt, 'cibyp-' + name + '.lock')
+        fh = open(lock_path, 'w')
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fh.write(str(os.getpid()))
+        fh.flush()
+        globals()['_instance_lock_fh'] = fh   # 持有引用，进程存活期间不释放
+        return True
+    except Exception:
+        return False
+
+
 CONFIG_FILE = os.path.expanduser('~/.config/cibyp/desktop.json')
 
 ACTIONS = [
@@ -173,4 +190,7 @@ class DesktopApp(Gtk.Application):
 
 
 if __name__ == '__main__':
+    if not single_instance_guard('cibyp-desktop'):
+        print('cibyp-desktop: 已有一个实例在运行，退出', file=sys.stderr)
+        sys.exit(0)
     sys.exit(DesktopApp().run([]))
