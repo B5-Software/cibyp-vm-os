@@ -23,13 +23,8 @@ export MOZ_ENABLE_WAYLAND=1
 export _JAVA_AWT_WM_NONREPARENTING=1
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export GTK_A11Y="${GTK_A11Y:-none}"
-# gtk4-layer-shell：GTK4 载入顺序限制，需在本会话内预加载（实测 sway/外壳/应用均稳定）
-for _lsl in /usr/lib/*/libgtk4-layer-shell.so.0 /usr/lib/libgtk4-layer-shell.so.0; do
-  if [ -f "$_lsl" ]; then
-    export LD_PRELOAD="$_lsl${LD_PRELOAD:+:$LD_PRELOAD}"
-    break
-  fi
-done
+# LD_PRELOAD 不在此处全局导出：sway/bash 不应被预加载 GTK 库；
+# 自研 GTK 应用（cibyp-shell/cibyp-desktop）由 cibypui.ensure_layer_shell_preload() 自行带环境重执行。
 export XDG_DATA_DIRS="${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 GEOMETRY="${CIBYP_GEOMETRY:-1280x800}"

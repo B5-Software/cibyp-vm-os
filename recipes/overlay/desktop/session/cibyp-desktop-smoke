@@ -95,6 +95,13 @@ done
 [ "$shell_ok" = 1 ] || { fail "自研外壳未启动（见 $LOG）"; tail -30 "$LOG"; exit 1; }
 pass "自研外壳已启动（cibyp-shell + cibyp-desktop）"
 
+# 等外壳就绪（socket 出现代表 cibyp-shell 正常跑起来了）
+sock_ready=0
+for _ in $(seq 1 60); do
+  if [ -S "${XDG_RUNTIME_DIR}/cibyp-shell.sock" ]; then sock_ready=1; break; fi
+  sleep 0.5
+done
+[ "$sock_ready" = 1 ] && pass "外壳 socket 就绪（cibyp-shell.sock）" || fail "外壳 socket 未出现（cibyp-shell 可能崩溃）"
 sleep 2
 
 # 截图 1
@@ -171,6 +178,19 @@ if grim "$OUT_PNG" >/dev/null 2>&1 && [ -s "$OUT_PNG" ]; then
   pass "预览图已生成：$OUT_PNG（$(stat -c %s "$OUT_PNG") 字节）"
 else
   fail "预览图生成失败"
+fi
+
+if [ "$FAIL" != 0 ]; then
+  echo "---- 诊断：会话日志（末 40 行）----"
+  tail -40 "$LOG" 2>/dev/null
+  echo "---- 诊断：相关进程 ----"
+  ps -eo pid,user,args 2>/dev/null | grep -E 'cibyp|sway|wayvnc' | grep -v grep | head -20
+  echo "---- 诊断：layer-shell 库与预加载 ----"
+  ls -l /usr/lib/*/libgtk4-layer-shell.so.0 2>/dev/null | head -2
+  echo "LD_PRELOAD=${LD_PRELOAD:-（未设置）}"
+  echo "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-（未设置）} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-（未设置）}"
+  echo "---- 诊断：截图信息 ----"
+  ls -l "$OUT_PNG" 2>/dev/null
 fi
 
 echo "== 结果：$([ "$FAIL" = 0 ] && echo 全部通过 || echo "$FAIL 项失败") =="
