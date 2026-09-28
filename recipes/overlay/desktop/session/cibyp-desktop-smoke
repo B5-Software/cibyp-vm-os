@@ -16,6 +16,8 @@ GEOMETRY="1280x800"
 OUT_PNG="/tmp/cibyp-desktop.png"
 LOG="${TMPDIR:-/tmp}/cibyp-desktop-smoke-$(id -u).log"
 WORK="$(mktemp -d /tmp/cibyp-smoke-XXXXXX)"
+RESULT_FILE="${TMPDIR:-/tmp}/cibyp-desktop-smoke.result"
+rm -f "$RESULT_FILE"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,9 +55,15 @@ export CIBYP_LOG="$LOG"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/cibyp-runtime-$(id -u)}"
 
 cleanup() {
+  # 先结束会话进程组：会话是 setsid 起的，只 pkill 脚本名会留下 sway/swaybg 孤儿（CI 实测）
+  [ -n "${SESSION_PID:-}" ] && kill -- -"$SESSION_PID" 2>/dev/null || true
   pkill -f 'cibyp-session' 2>/dev/null || true
   pkill -f 'cibyp-shell' 2>/dev/null || true
-  pkill -f 'cibyp-desktop' 2>/dev/null || true
+  # 注意：绝不能用 pkill -f 'cibyp-desktop' —— 冒烟自身 cmdline 含 cibyp-desktop-smoke，会自杀（实测退出码 143、检查全过却判红）
+  pkill -f 'cibyp-desktop$' 2>/dev/null || true
+  pkill -x sway 2>/dev/null || true
+  pkill -x swaybg 2>/dev/null || true
+  pkill -x wayvnc 2>/dev/null || true
   pkill -f 'sway --config' 2>/dev/null || true
   rm -f "${XDG_RUNTIME_DIR:-/tmp}"/cibyp-shell.sock 2>/dev/null || true
   rm -rf "$WORK"
@@ -220,5 +228,6 @@ if [ "$FAIL" != 0 ]; then
   } 2>&1 | tee -a "$LOG"
 fi
 
+if [ "$FAIL" = 0 ]; then echo "PASS" > "$RESULT_FILE"; else echo "FAIL $FAIL" > "$RESULT_FILE"; fi
 echo "== 结果：$([ "$FAIL" = 0 ] && echo 全部通过 || echo "$FAIL 项失败") =="
 exit $([ "$FAIL" = 0 ] && echo 0 || echo 1)
