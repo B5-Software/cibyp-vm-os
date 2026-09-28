@@ -8,6 +8,7 @@
 
 import os
 import socket
+import time
 import sys
 
 SOCKET_PATH = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'cibyp-shell.sock')
@@ -18,16 +19,20 @@ def main():
     if not cmd:
         print('用法: cibypctl menu|calendar|power|screenshot|toast [文本]')
         return 2
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(2)
-        s.connect(SOCKET_PATH)
-        s.sendall(cmd.encode('utf-8'))
-        s.close()
-        return 0
-    except Exception as e:
-        print('无法连接桌面外壳:', e, file=sys.stderr)
-        return 1
+    last = None
+    for _ in range(20):
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect(SOCKET_PATH)
+            s.sendall(cmd.encode('utf-8'))
+            s.close()
+            return 0
+        except Exception as e:  # 外壳可能尚未就绪或正在重启：短暂重试
+            last = e
+            time.sleep(0.5)
+    print('无法连接桌面外壳:', last, file=sys.stderr)
+    return 1
 
 
 if __name__ == '__main__':

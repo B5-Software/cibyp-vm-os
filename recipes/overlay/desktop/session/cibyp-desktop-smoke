@@ -29,6 +29,14 @@ FAIL=0
 pass() { echo "  PASS  $*"; }
 fail() { echo "  FAIL  $*"; FAIL=$((FAIL + 1)); }
 
+# 互斥锁：两个实例并发时，后启动的会 pkill 掉先启动的会话/socket，
+# 导致 socket/cibypctl/截图随机失败（CI 实测）。这里串行化，第二实例等待最多 15 分钟。
+exec 9>"${TMPDIR:-/tmp}/cibyp-desktop-smoke.lock"
+if ! flock -w 900 9; then
+  echo "  另一个桌面冒烟实例仍在运行（等待 900s 超时）" >&2
+  exit 3
+fi
+
 # 防御：外部若注入 LD_PRELOAD（会破坏 sway/bash），在本脚本内清掉
 unset LD_PRELOAD
 export GSK_RENDERER="${GSK_RENDERER:-cairo}"   # 无 GPU 的 VM：GTK4 必须软件渲染
@@ -49,6 +57,7 @@ cleanup() {
   pkill -f 'cibyp-shell' 2>/dev/null || true
   pkill -f 'cibyp-desktop' 2>/dev/null || true
   pkill -f 'sway --config' 2>/dev/null || true
+  rm -f "${XDG_RUNTIME_DIR:-/tmp}"/cibyp-shell.sock 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -65,7 +74,7 @@ for _cmd in cibyp-shell cibyp-desktop wayvnc sway ydotoold; do
   done
 done
 sleep 0.4
-rm -f "${XDG_RUNTIME_DIR:-/tmp}"/wayland-* "${XDG_RUNTIME_DIR:-/tmp}"/sway-ipc.*.sock 2>/dev/null || true
+rm -f "${XDG_RUNTIME_DIR:-/tmp}"/wayland-* "${XDG_RUNTIME_DIR:-/tmp}"/sway-ipc.*.sock "${XDG_RUNTIME_DIR:-/tmp}"/cibyp-shell.sock 2>/dev/null || true
 command -v sway >/dev/null || { fail "sway 未安装"; exit 1; }
 command -v grim >/dev/null || { fail "grim 未安装"; exit 1; }
 command -v wlr-randr >/dev/null || echo "  提示：wlr-randr 缺失（将回退 swaymsg 设置分辨率）"
