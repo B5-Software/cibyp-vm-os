@@ -114,9 +114,9 @@ done
 [ "$shell_ok" = 1 ] || { fail "自研外壳未启动（见 $LOG）"; tail -30 "$LOG"; exit 1; }
 pass "自研外壳已启动（cibyp-shell + cibyp-desktop）"
 
-# 等外壳就绪（socket 出现代表 cibyp-shell 正常跑起来了）
+# 等外壳就绪（socket 出现代表 cibyp-shell 正常跑起来了；TCG 模拟的 arm64 可能要几分钟）
 sock_ready=0
-for _ in $(seq 1 60); do
+for _ in $(seq 1 480); do
   if [ -S "${XDG_RUNTIME_DIR}/cibyp-shell.sock" ]; then sock_ready=1; break; fi
   sleep 0.5
 done
