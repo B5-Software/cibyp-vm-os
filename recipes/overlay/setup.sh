@@ -81,7 +81,24 @@ EOF
 # ---------------------------------------------------------------- 用户与工作区
 if ! id cibyp >/dev/null 2>&1; then
   useradd -m -s /bin/bash -G sudo cibyp
+
 fi
+# ----------------------------------------------------------------
+# 桌面输入：cibyp-input / seatd / uinput
+# ----------------------------------------------------------------
+# seatd 的 socket 属 root:video；/dev/input/* 属 root:input —— cibyp 不在组里就打不开：
+#   → sway 看不到任何输入设备（get_inputs 为空）、libseat 报 Permission denied（实测 CI 红）
+getent group input >/dev/null || groupadd -r input
+getent group video >/dev/null || groupadd -r video
+usermod -aG input,video cibyp 2>/dev/null || true
+# uinput：自研鼠标注入器（守护以 root 运行，这里给设备节点一个稳妥权限）
+install -d -m 0755 /etc/udev/rules.d /etc/modules-load.d
+cat > /etc/udev/rules.d/99-cibyp-uinput.rules <<'EOF'
+KERNEL=="uinput", GROUP="input", MODE="0660"
+EOF
+echo uinput > /etc/modules-load.d/cibyp-uinput.conf
+# seatd：SSH 会话没有 logind session，libseat 必须走 seatd（桌面镜像已装 seatd）
+systemctl enable seatd 2>/dev/null || true
 passwd -l cibyp >/dev/null 2>&1 || true
 install -d -o cibyp -g cibyp -m 0755 /workspace
 cat > /etc/sudoers.d/cibyp <<'EOF'
