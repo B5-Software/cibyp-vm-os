@@ -23,6 +23,14 @@ actions:
     variant: minbase
     check-gpg: true
 
+  # ---- apt 网络重试（CI 上 deb.debian.org 偶发 Connection reset，实测红过一轮） ----
+  - action: run
+    chroot: true
+    description: 配置 apt 自动重试
+    command: |
+      mkdir -p /etc/apt/apt.conf.d
+      printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99-cibyp-retries
+
   # ---- 系统底座（与发行版无关的通用工具） ----
   - action: apt
     update: true
