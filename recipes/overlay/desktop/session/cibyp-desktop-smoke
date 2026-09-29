@@ -44,10 +44,17 @@ unset LD_PRELOAD
 export GSK_RENDERER="${GSK_RENDERER:-cairo}"   # 无 GPU 的 VM：GTK4 必须软件渲染
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 
-export WLR_BACKENDS="${WLR_BACKENDS:-headless}"
+# 注意：必须带 libinput（headless 单后端不加载输入设备），也不能设 WLR_LIBINPUT_NO_DEVICES
+# 有 seatd → 带 libinput（输入注入可用）；否则纯 headless（sway 才能起来）
+if [ -S /run/seatd.sock ] || pgrep -x seatd >/dev/null 2>&1; then
+  export WLR_BACKENDS="${WLR_BACKENDS:-headless,libinput}"
+  export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
+else
+  export WLR_BACKENDS="${WLR_BACKENDS:-headless}"
+fi
 export WLR_HEADLESS_OUTPUTS="${WLR_HEADLESS_OUTPUTS:-1}"
 export WLR_RENDERER="${WLR_RENDERER:-pixman}"
-export WLR_LIBINPUT_NO_DEVICES=1
+# 注意：不要设置 WLR_LIBINPUT_NO_DEVICES（会让 sway 忽略所有输入设备 → 鼠标注入失效）
 export CIBYP_GEOMETRY="$GEOMETRY"
 # 注意：这里绝不能导出 LD_PRELOAD —— 会让本次启动的会话 bash 预加载 GTK 库而静默崩溃。
 # layer-shell 预加载由 cibyp-session 在会话内部完成（子进程继承）。

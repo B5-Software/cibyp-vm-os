@@ -156,7 +156,7 @@ def collect_windows(node, acc):
     """收集可显示窗口（app_id/title/visible/focused）"""
     if not isinstance(node, dict):
         return
-    if node.get('type') == 'con' and node.get('pid'):
+    if node.get('type') in ('con', 'floating_con') and node.get('pid'):
         app_id = (node.get('app_id') or node.get('window_properties', {}).get('class') or '')
         title = node.get('name') or ''
         if app_id == 'cibyp-panel' or app_id == 'cibyp-desktop':
@@ -767,6 +767,9 @@ class ShellApp(Gtk.Application):
 
 def main():
     ui.ensure_layer_shell_preload()  # layer-shell 需 LD_PRELOAD：自动带环境重执行一次（必须在取锁之前）
+    if not ui.acquire_single_instance('cibyp-shell'):
+        print('cibyp-shell: 已有实例在运行，退出（避免双面板）', file=sys.stderr, flush=True)
+        return 0
     app = ShellApp()
     return app.run([])
 

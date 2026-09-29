@@ -47,6 +47,7 @@ class AboutWindow(Gtk.ApplicationWindow):
     def __init__(self, app):
         super().__init__(application=app, title='关于本机')
         self.set_name('cibyp-about')
+        self.add_css_class('cibyp-app')
         self.set_default_size(560, 460)
         ui.install_css()
         osr = os_release()

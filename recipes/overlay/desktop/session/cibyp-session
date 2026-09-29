@@ -61,6 +61,17 @@ for _cmd in cibyp-shell cibyp-desktop wayvnc sway ydotoold; do
 done
 sleep 0.4
 rm -f "${XDG_RUNTIME_DIR:-/tmp}"/wayland-* "${XDG_RUNTIME_DIR:-/tmp}"/sway-ipc.*.sock 2>/dev/null || true
+# 幂等：清理可能残留的旧会话/外壳/sway（应用重启后 VM 仍在跑时会出现叠加）
+pkill -f 'cibyp-shell$' 2>/dev/null || true
+pkill -f 'cibyp-desktop$' 2>/dev/null || true
+# 注意：旧会话清理必须排除自身（本脚本 cmdline 就是 .../cibyp-session）
+for _p in $(pgrep -f 'cibyp-session$' 2>/dev/null || true); do
+  [ "$_p" = "$$" ] && continue
+  kill "$_p" 2>/dev/null || true
+done
+pkill -x sway 2>/dev/null || true
+pkill -x swaybg 2>/dev/null || true
+sleep 0.3
 
 log "启动会话：geometry=$GEOMETRY backend=${WLR_BACKENDS:-auto} runtime=$XDG_RUNTIME_DIR"
 log "wayland socket: $XDG_RUNTIME_DIR/wayland-*（sway 启动后生成）"
@@ -78,6 +89,14 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-daemon >/dev/null 2
 fi
 
 # sway（前台运行在后台，便于监督子进程）
+# 鼠标注入守护：必须在 sway **之前**创建 uinput 设备
+#（sway 启动时枚举设备；VM 里 libinput 热插拔不可靠，晚创建会永远不被识别 —— 实测）
+if ! pgrep -f 'cibyp-input daemon' >/dev/null 2>&1; then
+  ( sudo -n setsid env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" /usr/local/bin/cibyp-input daemon >>"$LOG" 2>&1 & ) || true
+  log "已启动鼠标注入守护（cibyp-input daemon）"
+  sleep 0.6
+fi
+
 sway --config "$SWAY_CONFIG" >>"$LOG" 2>&1 &
 SWAY_PID=$!
 log "sway 已启动 pid=$SWAY_PID"

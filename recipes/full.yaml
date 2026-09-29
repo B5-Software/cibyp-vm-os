@@ -126,6 +126,7 @@ actions:
       - sway
       - swaybg
       - wayvnc
+      - seatd
       - grim
       - slurp
       - wlr-randr

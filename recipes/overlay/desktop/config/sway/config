@@ -108,7 +108,6 @@ input type:touchpad {
 input type:pointer {
     accel_profile flat
 }
-
-# 自动启动（会话脚本也会拉起；这里兜底防止外壳被误关）
-exec_always --no-startup-id /usr/local/bin/cibyp-desktop
-exec_always --no-startup-id /usr/local/bin/cibyp-shell
+# 外壳与壁纸由 cibyp-session 统一启动与监督（此处不得再用 exec_always，
+# 否则每个会话会出现两套面板/壁纸 —— 实测双面板根因）。
+# 直接跑 sway（无 cibyp-session，例如 base 变体）时，由应用侧负责启动外壳。

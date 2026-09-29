@@ -64,6 +64,9 @@ CSS = f"""
 window, .cibyp-transparent {{
   background: transparent;
 }}
+window.cibyp-app {{
+  background: rgb(11, 15, 26);
+}}
 .cibyp-panel {{
   background: rgba(15, 20, 33, 0.88);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
@@ -474,6 +477,27 @@ def ensure_layer_shell_preload():
         os.execve(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:], env)
     except Exception:
         pass  # 失败则继续（面板会退化为普通窗口，不致命）
+
+
+_INSTANCE_LOCKS = {}
+
+
+def acquire_single_instance(name):
+    """按名字获取单实例锁（$XDG_RUNTIME_DIR/<name>.lock，进程退出自动释放）。
+    返回 True=获得锁，False=已有实例在跑。用于外壳/壁纸这类必须唯一的常驻组件。"""
+    try:
+        import fcntl
+    except Exception:
+        return True
+    rt = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
+    path = os.path.join(rt, name + '.lock')
+    try:
+        fh = open(path, 'w')
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _INSTANCE_LOCKS[name] = fh
+        return True
+    except Exception:
+        return False
 
 
 def try_layer_shell(window, *, namespace=None, layer='top', anchors=('top', 'left', 'right'), exclusive=None):

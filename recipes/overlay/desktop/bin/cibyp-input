@@ -2,24 +2,33 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 B5-Software
 #
-# cibyp-input —— 自研 Wayland 鼠标注入器（Linux uinput，零第三方依赖）
+# cibyp-input —— 自研鼠标注入器（Linux uinput，零第三方依赖）
 #
 # 为什么自研：ydotool 在 Debian 13 只存在于 backports（镜像仅启用 main），
-# 而鼠标注入是 VM 内 computer-use 的刚需。这里直接写 /dev/uinput，
-# 用「相对位移」合成绝对目标位置（位置状态存于 $XDG_RUNTIME_DIR/cibyp-input.pos）。
+# 而鼠标注入是 VM 内 computer-use 的刚需。这里直接写 /dev/uinput。
+#
+# 关键设计（真机踩坑）：
+#   - uinput 设备**必须在合成器注册之后**再用，且不能"创建→发事件→立刻销毁"：
+#     sway/libinput 通过 udev 热插拔注册手柄需要时间，一次性设备会被直接忽略
+#     （实测：点击/移动完全无效）。因此提供常驻模式：
+#         cibyp-inputd            常驻守护：建一次设备，监听 unix socket
+#         cibyp-input <cmd>       客户端：优先走守护（设备常驻、位置精确）；
+#                                 守护不在时退化为一次性模式（等 0.8s 注册）
+#   - 绝对定位用"相对位移 + 归零校准"实现：先把光标往左上顶死（合成器钳制到 0,0），
+#     再移动目标距离 —— 不依赖我们记忆的光标位置，用户手动移动过也不会偏。
 #
 # 用法（与 ydotool 子集对齐，便于应用侧无缝回退）：
-#   cibyp-input move <x> <y>          移动到绝对坐标
+#   cibyp-input move <x> <y>
 #   cibyp-input click [left|right|middle] [--repeat N]
 #   cibyp-input mousedown|mouseup [left|right|middle]
 #   cibyp-input scroll <up|down> [N]
-#   cibyp-input pos                   打印当前跟踪位置（x y）
+#   cibyp-input pos
 #
-# 权限：需要写 /dev/uinput（cibyp 用户有 NOPASSWD sudo，镜像内可直接跑；
-# 无权限时给出明确提示并以非零退出）。
+# 权限：需要写 /dev/uinput（cibyp 用户有 NOPASSWD sudo；无权限时明确报错）。
 
 import fcntl
 import os
+import socket
 import struct
 import sys
 import time
@@ -35,7 +44,9 @@ REL_X, REL_Y, REL_HWHEEL, REL_WHEEL = 0, 1, 6, 8
 BTN = {'left': 0x110, 'right': 0x111, 'middle': 0x112}
 
 UINPUT = '/dev/uinput'
-POS_FILE = os.path.join(os.environ.get('XDG_RUNTIME_DIR', '/tmp'), 'cibyp-input.pos')
+RT = os.environ.get('XDG_RUNTIME_DIR', '/tmp')
+POS_FILE = os.path.join(RT, 'cibyp-input.pos')
+SOCK_FILE = os.path.join(RT, 'cibyp-input.sock')
 EVENT_FMT = 'llHHi'          # struct input_event（64 位 timeval + type + code + value）
 EVENT_SIZE = struct.calcsize(EVENT_FMT)
 
@@ -45,12 +56,12 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def emit(fd, etype, code, value):
-    fd.write(struct.pack(EVENT_FMT, 0, 0, etype, code, value))
+def emit(f, etype, code, value):
+    f.write(struct.pack(EVENT_FMT, 0, 0, etype, code, value))
 
 
-def syn(fd):
-    emit(fd, EV_SYN, 0, 0)
+def syn(f):
+    emit(f, EV_SYN, 0, 0)
 
 
 def open_device():
@@ -70,15 +81,17 @@ def open_device():
     for rel in (REL_X, REL_Y, REL_WHEEL, REL_HWHEEL):
         fcntl.ioctl(fd, UI_SET_RELBIT, rel)
 
-    # uinput_user_dev：name[80] + input_id(4*u16) + absmax/absmin/absfuzz/absflat(4*4*i32)
+    # uinput_user_dev：name[80] + input_id(4*u16) + ff_effects_max(u32)
+    #   + absmax/absmin/absfuzz/absflat 各 64 个 int32（共 1024 字节）
+    # （长度不足会让内核返回 EINVAL —— 真机实测）
     name = b'CIBYP Virtual Mouse\0'
     name = name + b'\0' * (80 - len(name))
     dev = struct.pack('80sHHHHi', name, 0x03, 0x01, 1, 0, 0)  # BUS_USB / vendor / product / version
-    dev += b'\0' * 16 * 4  # ABS 参数区（不需要）
+    dev += b'\0' * (64 * 4 * 4)
     f.write(dev)
     f.flush()
     fcntl.ioctl(fd, UI_DEV_CREATE)
-    time.sleep(0.25)  # 等内核/合成器识别设备
+    time.sleep(0.25)
     return fd, f
 
 
@@ -99,74 +112,143 @@ def write_pos(x, y):
         pass
 
 
-def move_to(fd, x, y):
-    cx, cy = read_pos()
-    dx, dy = x - cx, y - cy
-    # 分步发送，单步不超过 120px，避免合成器一次吃掉过大位移
+def move_to(f, x, y):
+    # 归零：向大负方向发送相对位移，合成器把光标钳制在 (0,0)，
+    # 之后即可精确到达目标（不依赖历史跟踪位置）
+    for _ in range(2):
+        emit(f, EV_REL, REL_X, -3000)
+        emit(f, EV_REL, REL_Y, -3000)
+        syn(f)
+        time.sleep(0.02)
+    dx, dy = int(x), int(y)
     steps = max(1, int(max(abs(dx), abs(dy)) / 120) + 1)
-    for i in range(steps):
-        emit(fd, EV_REL, REL_X, int(round(dx / steps)))
-        emit(fd, EV_REL, REL_Y, int(round(dy / steps)))
-        syn(fd)
+    for _ in range(steps):
+        emit(f, EV_REL, REL_X, int(round(dx / steps)))
+        emit(f, EV_REL, REL_Y, int(round(dy / steps)))
+        syn(f)
         time.sleep(0.01)
     write_pos(x, y)
 
 
-def click(fd, button='left', repeat=1, hold=False, release=False):
+def click(f, button='left', repeat=1, hold=False, release=False):
     code = BTN.get(button, BTN['left'])
     if release:
-        emit(fd, EV_KEY, code, 0)
-        syn(fd)
+        emit(f, EV_KEY, code, 0)
+        syn(f)
         return
     if hold:
-        emit(fd, EV_KEY, code, 1)
-        syn(fd)
+        emit(f, EV_KEY, code, 1)
+        syn(f)
         return
     for _ in range(max(1, repeat)):
-        emit(fd, EV_KEY, code, 1)
-        syn(fd)
-        emit(fd, EV_KEY, code, 0)
-        syn(fd)
+        emit(f, EV_KEY, code, 1)
+        syn(f)
+        time.sleep(0.05)  # 按住 50ms：GTK 等工具包对瞬时点击更挑剔
+        emit(f, EV_KEY, code, 0)
+        syn(f)
         time.sleep(0.06)
 
 
-def scroll(fd, direction, n=1):
-    code = REL_WHEEL
+def scroll(f, direction, n=1):
     value = 1 if direction == 'up' else -1
     for _ in range(max(1, n)):
-        emit(fd, EV_REL, code, value)
-        syn(fd)
+        emit(f, EV_REL, REL_WHEEL, value)
+        syn(f)
         time.sleep(0.04)
 
 
-def main(argv):
-    if not argv:
-        die('用法: cibyp-input move <x> <y> | click [left|right|middle] [--repeat N] | mousedown|mouseup [btn] | scroll up|down [N] | pos')
+def dispatch(f, argv):
+    """执行一条命令；返回要打印的文本（可为空）。"""
     cmd = argv[0]
+    if cmd == 'move' and len(argv) >= 3:
+        move_to(f, int(float(argv[1])), int(float(argv[2])))
+        return ''
+    if cmd == 'click':
+        btn = argv[1] if len(argv) > 1 and not argv[1].startswith('--') else 'left'
+        repeat = 1
+        if '--repeat' in argv:
+            repeat = int(argv[argv.index('--repeat') + 1])
+        click(f, btn, repeat)
+        return ''
+    if cmd in ('mousedown', 'mouseup'):
+        btn = argv[1] if len(argv) > 1 else 'left'
+        click(f, btn, hold=(cmd == 'mousedown'), release=(cmd == 'mouseup'))
+        return ''
+    if cmd == 'scroll':
+        direction = argv[1] if len(argv) > 1 else 'down'
+        n = int(argv[2]) if len(argv) > 2 else 1
+        scroll(f, direction, n)
+        return ''
     if cmd == 'pos':
         x, y = read_pos()
-        print(f'{x} {y}')
+        return f'{x} {y}'
+    raise ValueError('未知命令: ' + ' '.join(argv))
+
+
+# ------------------------------------------------------------------ 常驻守护
+
+def run_daemon():
+    fd, f = open_device()
+    if os.path.exists(SOCK_FILE):
+        try:
+            os.unlink(SOCK_FILE)
+        except Exception:
+            pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCK_FILE)
+    try:
+        os.chmod(SOCK_FILE, 0o666)
+    except Exception:
+        pass
+    srv.listen(8)
+    print('cibyp-inputd: 就绪（socket=%s）' % SOCK_FILE, file=sys.stderr, flush=True)
+    while True:
+        conn, _ = srv.accept()
+        try:
+            data = conn.recv(4096).decode('utf-8', 'ignore').strip()
+            if not data:
+                conn.sendall('err 空命令\n'.encode('utf-8'))
+                continue
+            out = dispatch(f, data.split())
+            conn.sendall(('ok ' + out + '\n').encode() if out else b'ok\n')
+        except Exception as exc:  # noqa: BLE001
+            try:
+                conn.sendall(('err %s\n' % exc).encode())
+            except Exception:
+                pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def via_daemon(argv):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(6)
+    s.connect(SOCK_FILE)
+    s.sendall((' '.join(argv) + '\n').encode('utf-8'))
+    resp = s.recv(1024).decode('utf-8', 'ignore').strip()
+    s.close()
+    if resp.startswith('ok'):
+        extra = resp[2:].strip()
+        if extra:
+            print(extra)
         return 0
+    print('cibyp-input:', resp or '守护无响应', file=sys.stderr)
+    return 1
+
+
+def one_shot(argv):
     fd, f = open_device()
     try:
-        if cmd == 'move' and len(argv) >= 3:
-            move_to(fd, int(float(argv[1])), int(float(argv[2])))
-        elif cmd == 'click':
-            btn = argv[1] if len(argv) > 1 and not argv[1].startswith('--') else 'left'
-            repeat = 1
-            if '--repeat' in argv:
-                repeat = int(argv[argv.index('--repeat') + 1])
-            click(fd, btn, repeat)
-        elif cmd in ('mousedown', 'mouseup'):
-            btn = argv[1] if len(argv) > 1 else 'left'
-            click(fd, btn, hold=(cmd == 'mousedown'), release=(cmd == 'mouseup'))
-        elif cmd == 'scroll':
-            direction = argv[1] if len(argv) > 1 else 'down'
-            n = int(argv[2]) if len(argv) > 2 else 1
-            scroll(fd, direction, n)
-        else:
-            die('未知命令: ' + ' '.join(argv))
+        # 一次性模式：等 udev/libinput/合成器把手柄注册进来（否则事件会被忽略）
+        time.sleep(0.8)
+        out = dispatch(f, argv)
+        if out:
+            print(out)
     finally:
+        time.sleep(0.2)  # 让事件被消费后再销毁设备
         try:
             fcntl.ioctl(fd, UI_DEV_DESTROY)
         except Exception:
@@ -176,6 +258,25 @@ def main(argv):
         except Exception:
             pass
     return 0
+
+
+def main(argv):
+    if not argv:
+        die('用法: cibyp-input move <x> <y> | click [left|right|middle] [--repeat N] | '
+            'mousedown|mouseup [btn] | scroll up|down [N] | pos | daemon')
+    if argv[0] == 'daemon':
+        run_daemon()
+        return 0
+    if argv[0] == 'pos' and not os.path.exists(SOCK_FILE):
+        x, y = read_pos()
+        print(f'{x} {y}')
+        return 0
+    if os.path.exists(SOCK_FILE):
+        try:
+            return via_daemon(argv)
+        except Exception as exc:  # noqa: BLE001
+            print('cibyp-input: 守护不可用（%s），回退一次性模式' % exc, file=sys.stderr)
+    return one_shot(argv)
 
 
 if __name__ == '__main__':

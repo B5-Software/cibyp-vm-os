@@ -193,4 +193,7 @@ class DesktopApp(Gtk.Application):
 
 if __name__ == '__main__':
     ui.ensure_layer_shell_preload()  # layer-shell 需 LD_PRELOAD：自动带环境重执行一次（必须在取锁之前）
+    if not ui.acquire_single_instance('cibyp-desktop'):
+        print('cibyp-desktop: 已有实例在运行，退出（避免双壁纸层）', file=sys.stderr, flush=True)
+        sys.exit(0)
     sys.exit(DesktopApp().run([]))
