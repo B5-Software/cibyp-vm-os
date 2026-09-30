@@ -429,8 +429,10 @@ async function main() {
     const bind = probe("python3 -c \"import gi; gi.require_version('Gtk4LayerShell','1.0'); from gi.repository import Gtk4LayerShell; print('layershell-ok')\" 2>&1 | tail -1");
     checks.assert('GTK4 layer-shell 绑定可用', bind.out.includes('layershell-ok'), bind.out);
 
-    const apps = probe("for a in cibyp-files cibyp-editor cibyp-settings cibyp-calc cibyp-viewer cibyp-about; do command -v $a >/dev/null || echo missing-$a; done; echo apps-ok");
-    checks.assert('自研基础软件已安装（文件/编辑器/设置/计算器/图片查看器/关于）', apps.out.includes('apps-ok') && !apps.out.includes('missing-'), apps.out);
+    const apps = probe("for a in cibyp-files cibyp-editor cibyp-terminal cibyp-settings cibyp-calc cibyp-viewer cibyp-about; do command -v $a >/dev/null || echo missing-$a; done; echo apps-ok");
+    checks.assert('自研基础软件已安装（文件/编辑器/终端/设置/计算器/图片查看器/关于）', apps.out.includes('apps-ok') && !apps.out.includes('missing-'), apps.out);
+    const vte = probe("python3 -c \"import gi; gi.require_version('Vte','3.91'); from gi.repository import Vte; print('vte-ok')\" 2>&1 | tail -1");
+    checks.assert('GTK4 VTE 终端绑定可用', vte.out.includes('vte-ok'), vte.out);
 
     const desktopEntries = probe("ls /usr/share/applications/cibyp-*.desktop | wc -l");
     checks.assert('桌面菜单项（.desktop）已安装', parseInt(desktopEntries.out, 10) >= 7, desktopEntries.out);

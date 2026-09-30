@@ -6,5 +6,5 @@ from pathlib import Path
 local = Path(__file__).resolve().parent.parent / 'lib'
 sys.path.insert(0, str(local if local.is_dir() else Path('/usr/local/lib/cibyp-desktop/lib')))
 import cibypui as ui
-from campus_settings import AboutWindow
-sys.exit(ui.run_application('about', AboutWindow))
+from campus_terminal import TerminalWindow
+sys.exit(ui.run_application('terminal', TerminalWindow))

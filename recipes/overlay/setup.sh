@@ -277,13 +277,16 @@ find /var/log -type f -exec truncate -s 0 {} \; 2>/dev/null || true
 #   /usr/share/wayland-sessions       Wayland 会话入口（供 display manager 识别）
 if [ -d /opt/cibyp-overlay/desktop ]; then
   echo "[cibyp] 安装自研 Wayland 桌面（外壳/基础软件/sway 配置）"
-  install -d -m 0755 /usr/local/lib/cibyp-desktop/lib /usr/local/lib/cibyp-desktop/bin /etc/cibyp/sway
+  install -d -m 0755 /usr/local/lib/cibyp-desktop/lib /usr/local/lib/cibyp-desktop/bin /usr/local/lib/cibyp-desktop/session /usr/local/lib/cibyp-desktop/config /etc/cibyp/sway
   cp -a /opt/cibyp-overlay/desktop/lib/. /usr/local/lib/cibyp-desktop/lib/ 2>/dev/null || true
   cp -a /opt/cibyp-overlay/desktop/bin/. /usr/local/lib/cibyp-desktop/bin/ 2>/dev/null || true
   cp -a /opt/cibyp-overlay/desktop/bin/. /usr/local/bin/ 2>/dev/null || true
+  cp -a /opt/cibyp-overlay/desktop/session/. /usr/local/lib/cibyp-desktop/session/
+  cp -a /opt/cibyp-overlay/desktop/config/. /usr/local/lib/cibyp-desktop/config/
   [ -f /opt/cibyp-overlay/desktop/session/cibyp-session ] && install -m 0755 /opt/cibyp-overlay/desktop/session/cibyp-session /usr/local/bin/cibyp-session
   [ -f /opt/cibyp-overlay/desktop/session/cibyp-desktop-smoke ] && install -m 0755 /opt/cibyp-overlay/desktop/session/cibyp-desktop-smoke /usr/local/bin/cibyp-desktop-smoke
   chmod 0755 /usr/local/bin/cibyp-* 2>/dev/null || true
+  chmod 0755 /usr/local/lib/cibyp-desktop/bin/cibyp-* /usr/local/lib/cibyp-desktop/session/cibyp-* 2>/dev/null || true
   if [ -f /opt/cibyp-overlay/desktop/config/sway/config ]; then
     cp /opt/cibyp-overlay/desktop/config/sway/config /etc/cibyp/sway/config
     install -d -m 0755 /etc/skel/.config/sway /home/cibyp/.config/sway
@@ -293,6 +296,9 @@ if [ -d /opt/cibyp-overlay/desktop ]; then
   fi
   install -d -m 0755 /usr/share/applications
   cp -a /opt/cibyp-overlay/desktop/applications/. /usr/share/applications/ 2>/dev/null || true
+  install -d -m 0755 /usr/share/icons/hicolor/scalable/apps
+  cp -a /opt/cibyp-overlay/desktop/icons/. /usr/share/icons/hicolor/scalable/apps/
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
   install -d -m 0755 /usr/share/wayland-sessions
   cat > /usr/share/wayland-sessions/cibyp.desktop <<'EOF'
 [Desktop Entry]

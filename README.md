@@ -1,5 +1,7 @@
 # CIBYP-VM-OS
 
+当前源码版本：**0.3.0**。Campus 原生 Wayland 桌面、应用与 App 个性化同步说明见 [桌面文档](docs/CAMPUS-DESKTOP.md)，变更见 [更新记录](CHANGELOG.md)。桌面由本仓库 CI 构建进 OS 镜像，推送 `vm-os-v0.3.0` 标签触发发布。
+
 **CIBYP-VM-OS 是基于 Debian GNU/Linux 的再打包系统（remix）**，由本仓库的 CI 构建、
 发布到本仓库的 Release，供「Could I Be Your Partner」的 QEMU 虚拟机沙盒按需下载。
 它**不随应用安装包分发**（安装包体积零增长），运行时由应用内下载并做 sha256 校验。

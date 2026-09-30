@@ -1,593 +1,479 @@
-#!/usr/bin/env python3
+"""Live campus themes and native GTK4 application primitives."""
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 B5-Software
-#
-# CIBYP 桌面·共享主题与绘制库（自研，不依赖任何图标资源/主题包）
-#
-# 设计语言：
-#   - 深空底色 + 靛蓝(CB) / 青绿(ACCENT2) 点缀，圆角卡片，细描边，柔和阴影
-#   - 所有图标用 Cairo 现画（draw_icon），不依赖 SVG/PNG 资源与第三方主题
-#   - 字体优先 Noto Sans CJK，缺失时回退系统 sans
-#
-# 被 cibyp-shell / cibyp-desktop / cibyp-files / cibyp-editor / cibyp-settings /
-# cibyp-calc / cibyp-viewer / cibyp-about 共用。
-
-import math
+import glob
 import os
-import shutil
+from pathlib import Path
+import subprocess
 import sys
-
+import threading
 import gi
-
 gi.require_version('Gtk', '4.0')
-# GTK4 的 draw_func 要把 cairo.Context 转成 Python 对象：必须显式声明 foreign struct，
-# 否则报 "Couldn't find foreign struct converter for 'cairo.Context'"（实测踩坑）
-try:
-    gi.require_foreign('cairo')
-except Exception:
-    pass
-try:
-    import cairo  # noqa: F401, E402
-except Exception:
-    pass
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+gi.require_version('Gdk', '4.0')
+gi.require_foreign('cairo')
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango
+from campus_core import CONFIG_DIR, CONFIG_FILE, load_config, update_config, accent_color, appearance_palette
+from campus_icons import draw_icon, _round_rect
 
-# ------------------------------------------------------------------ 设计令牌
-
-BG_DEEP = (0x0B / 255, 0x0F / 255, 0x1A / 255)
-BG_DEEP2 = (0x16 / 255, 0x1E / 255, 0x33 / 255)
-SURFACE = (0x12 / 255, 0x18 / 255, 0x26 / 255)
-SURFACE_HI = (0x1B / 255, 0x24 / 255, 0x39 / 255)
-BORDER = (1, 1, 1, 0.09)
-TEXT = (0xE9 / 255, 0xEE / 255, 0xF8 / 255)
-TEXT_DIM = (0x93 / 255, 0xA0 / 255, 0xBB / 255)
-ACCENT = (0x7C / 255, 0x6B / 255, 0xFF / 255)      # 靛蓝紫
-ACCENT2 = (0x4D / 255, 0xD6 / 255, 0xC1 / 255)     # 青绿
-DANGER = (0xFF / 255, 0x6B / 255, 0x81 / 255)
-WARN = (0xFF / 255, 0xC4 / 255, 0x6B / 255)
-
-RADIUS = 14
-RADIUS_SM = 9 & 0xFF
+ROOT = Path(__file__).resolve().parent.parent
+_provider = None
+_state = load_config()
+_callbacks, _windows = [], []
+_watch_started = False
+_popovers = []
 
 
-def rgba(t, a=None):
-    r, g, b = t[:3]
-    return (r, g, b, 1.0 if a is None else a)
+def rgb(value):
+    return tuple(int(value[i:i+2], 16)/255 for i in (1, 3, 5))
 
 
-# ------------------------------------------------------------------ CSS
-
-CSS = f"""
-* {{
-  font-family: "Noto Sans CJK SC", "Noto Sans CJK", "Noto Sans", "DejaVu Sans", sans-serif;
-}}
-window, .cibyp-transparent {{
-  background: transparent;
-}}
-window.cibyp-app {{
-  background: rgb(11, 15, 26);
-}}
-.cibyp-panel {{
-  background: rgba(15, 20, 33, 0.88);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-}}
-.cibyp-card {{
-  background: rgba(19, 25, 40, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: {RADIUS}px;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
-}}
-.cibyp-subcard {{
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: {RADIUS_SM}px;
-}}
-.cibyp-btn {{
-  background: transparent;
-  border: none;
-  border-radius: {RADIUS_SM}px;
-  color: {_css_rgb(TEXT) if False else 'rgb(233,238,248)'};
-  padding: 4px 8px;
-  min-height: 26px;
-}}
-.cibyp-btn:hover {{ background: rgba(255, 255, 255, 0.08); }}
-.cibyp-btn:active {{ background: rgba(255, 255, 255, 0.14); }}
-.cibyp-btn.accent {{ background: rgba(124, 107, 255, 0.22); }}
-.cibyp-chip {{
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 999px;
-  padding: 2px 10px;
-}}
-.cibyp-title {{ font-size: 13pt; font-weight: 700; color: rgb(233,238,248); }}
-.cibyp-dim {{ color: rgb(147,160,187); }}
-.cibyp-mono {{ font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace; }}
-.cibyp-entry {{
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: {RADIUS_SM}px;
-  color: rgb(233,238,248);
-  padding: 6px 10px;
-  caret-color: rgb(124,107,255);
-}}
-.cibyp-entry:focus {{ border-color: rgba(124, 107, 255, 0.65); }}
-.cibyp-list {{
-  background: transparent;
-  color: rgb(233,238,248);
-}}
-.cibyp-list row {{ border-radius: {RADIUS_SM}px; }}
-.cibyp-list row:selected {{ background: rgba(124, 107, 255, 0.28); }}
-.cibyp-list row:hover {{ background: rgba(255, 255, 255, 0.06); }}
-scrollbar slider {{
-  background: rgba(255, 255, 255, 0.14);
-  border-radius: 999px;
-  min-width: 6px; min-height: 6px;
-}}
-scrollbar slider:hover {{ background: rgba(255, 255, 255, 0.24); }}
-.switch {{ background: rgba(255,255,255,0.10); border-radius: 999px; }}
-.switch:checked {{ background: rgba(124, 107, 255, 0.75); }}
-tooltip {{
-  background: rgba(19, 25, 40, 0.98);
-  color: rgb(233,238,248);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 8px;
-}}
-"""
+def color(name='text'):
+    return rgb(accent_color(_state) if name == 'accent' else appearance_palette(_state)[name])
 
 
-def _css_rgb(_t):  # pragma: no cover - 占位，保持 f-string 简单
-    return 'rgb(233,238,248)'
+def palette():
+    return appearance_palette(_state)
+
+
+def accent():
+    return accent_color(_state)
+
+
+def config():
+    return dict(_state)
+
+
+def apply_theme():
+    global _state, _provider
+    _state = load_config()
+    palette = appearance_palette(_state)
+    css = '''
+    @define-color accent_color ACCENT;
+    @define-color accent_bg_color ACCENT;
+    @define-color accent_fg_color white;
+    @define-color theme_selected_bg_color ACCENT;
+    @define-color theme_selected_fg_color white;
+    * { font-family: "Noto Sans CJK SC", "Noto Sans", sans-serif; font-size: 13px; }
+    window.campus { background: BG; color: TEXT; }
+    window.campus decoration { border-radius: 18px; box-shadow: 0 8px 24px SHADOW; }
+    headerbar { background: SURFACE; color: TEXT; border-bottom: 1px solid LINE; min-height: 42px; padding: 5px 10px; box-shadow: none; }
+    headerbar label { font-weight: 600; }
+    button { background: SURFACE; color: TEXT; border: 1px solid LINE; border-radius: 9px; padding: 7px 11px; min-height: 20px; box-shadow: none; }
+    button:hover { background: RAISED; }
+    button:checked, button.selected { background: RAISED; border-color: ACCENT; }
+    button:disabled { opacity: 0.4; }
+    button.flat { background: transparent; border-color: transparent; }
+    button.primary { background: ACCENT; color: white; border-color: ACCENT; }
+    button.danger { color: #d46676; }
+    button.close:hover { background: #dc6676; color: white; }
+    entry, searchentry, spinbutton, textview { background: SURFACE; color: TEXT; border-radius: 9px; border: 1px solid LINE; padding: 7px 10px; caret-color: ACCENT; }
+    entry:focus-within, searchentry:focus-within { border-color: ACCENT; outline-color: ACCENT; }
+    textview { border: none; border-radius: 0; }
+    textview text { background: SURFACE; color: TEXT; }
+    selection { background: ACCENT; color: white; }
+    .toolbar { background: SURFACE; border-bottom: 1px solid LINE; padding: 9px; }
+    .sidebar { background: RAISED; border-right: 1px solid LINE; padding: 12px; }
+    .status { background: SURFACE; color: DIM; border-top: 1px solid LINE; padding: 7px 12px; }
+    .card { background: SURFACE; border: 1px solid LINE; border-radius: 14px; padding: 16px; }
+    .campus-title { font-size: 23px; font-weight: 700; }
+    .heading { font-size: 16px; font-weight: 600; }
+    .dim { color: DIM; }
+    .mono, .mono * { font-family: "Noto Sans Mono", "DejaVu Sans Mono", monospace; }
+    list, listview, flowbox { background: transparent; color: TEXT; }
+    row { border-radius: 9px; padding: 4px; }
+    row:selected, row:hover { background: RAISED; color: TEXT; }
+    popover contents { background: SURFACE; color: TEXT; border: 1px solid LINE; border-radius: 15px; padding: 7px; box-shadow: 0 8px 20px SHADOW; }
+    popover button { border: none; background: transparent; }
+    popover button:hover { background: RAISED; }
+    popover arrow { background: SURFACE; }
+    .taskbar { background: SURFACE; color: TEXT; border-top: 1px solid LINE; padding: 8px 15px; }
+    .task { min-height: 34px; border-radius: 10px; padding: 4px 9px; }
+    .task.active { background: RAISED; border-bottom: 3px solid ACCENT; }
+    .task.running { border-bottom: 3px solid DIM; }
+    .shortcut { border: none; background: transparent; border-radius: 16px; padding: 9px; }
+    .shortcut:hover { background: SURFACE; }
+    .launcher-app { min-width: 72px; min-height: 75px; }
+    .calculator-key { min-height: 23px; padding: 5px 10px; }
+    .calculator-key label { font-size: 18px; }
+    .calculator-display { font-size: 30px; min-height: 58px; }
+    .accent { color: ACCENT; }
+    notebook header { background: RAISED; border-bottom: 1px solid LINE; }
+    notebook tab { padding: 7px 13px; }
+    notebook tab:checked { background: SURFACE; }
+    notebook tab:checked { box-shadow: inset 0 -3px ACCENT; }
+    checkbutton check:checked { background: ACCENT; border-color: ACCENT; color: white; }
+    scale highlight, switch:checked { background: ACCENT; }
+    tooltip { background: SURFACE; color: TEXT; border-radius: 8px; padding: 4px; }
+    '''
+    values = {key.upper(): value for key, value in palette.items()}
+    values['accent'.upper()] = accent_color(_state)
+    for key, value in values.items():
+        css = css.replace(key, value)
+    display = Gdk.Display.get_default()
+    if display:
+        if _provider:
+            Gtk.StyleContext.remove_provider_for_display(display, _provider)
+        _provider = Gtk.CssProvider()
+        _provider.load_from_data(css.encode())
+        Gtk.StyleContext.add_provider_for_display(display, _provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        Gtk.Settings.get_default().set_property('gtk-application-prefer-dark-theme', _state['theme'] == 'dark')
+    for callback in list(_callbacks):
+        safe(callback)
+    for window in _windows:
+        window.queue_draw()
 
 
 def install_css():
-    """把主题 CSS 装到默认显示（每个进程调用一次）"""
-    provider = Gtk.CssProvider()
-    provider.load_from_data(CSS.encode('utf-8'))
-    display = Gdk.Display.get_default()
-    if display is not None:
-        Gtk.StyleContext.add_provider_for_display(display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-    return provider
+    global _watch_started
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    apply_theme()
+    if not _watch_started:
+        _watch_started = True
+        monitor = Gio.File.new_for_path(str(CONFIG_DIR)).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+        def changed(_monitor, file, other, _event):
+            if any(item and item.get_basename() == CONFIG_FILE.name for item in (file, other)):
+                GLib.idle_add(lambda: (apply_theme(), False)[1])
+        monitor.connect('changed', changed)
+        globals()['_config_monitor'] = monitor
 
 
-# ------------------------------------------------------------------ 字体/尺寸
-
-def panel_height():
-    return 38
+def on_theme(callback):
+    _callbacks.append(callback)
 
 
-def font(size, weight=None):
-    """返回 (family, size, weight) 供 Cairo 使用"""
-    desc = f'Noto Sans CJK SC {size}'
-    if weight:
-        desc += f' {weight}'
-    return desc
+def set_preferences(**changes):
+    if _state.get('appearance_source') == 'app':
+        changes = {key: value for key, value in changes.items() if key not in ('theme', 'accent', 'accent_color', 'background_color', 'appearance_source')}
+    elif 'theme' in changes:
+        changes.setdefault('background_color', None)
+    if 'accent' in changes:
+        changes.setdefault('accent_color', None)
+    if not changes:
+        return
+    update_config(**changes)
+    apply_theme()
 
 
-# ------------------------------------------------------------------ 图标（Cairo 自绘）
-
-_ICON_STROKE = 1.9
-
-
-def _stroke(cr, color, width=_ICON_STROKE):
-    cr.set_source_rgba(*rgba(color))
-    cr.set_line_width(width)
-    cr.set_line_cap(1)  # ROUND
-    cr.set_line_join(1)
+def label(text='', css=None, expand=False):
+    item = Gtk.Label(label=text, xalign=0)
+    if css:
+        item.add_css_class('campus-title' if css == 'title' else css)
+    item.set_hexpand(expand)
+    return item
 
 
-def draw_icon(cr, name, x, y, size, color=TEXT, stroke=_ICON_STROKE):
-    """在 (x, y, size, size) 区域绘制线性图标（自绘，无资源依赖）"""
-    cr.save()
-    cr.translate(x, y)
-    s = size / 24.0
-    cr.scale(s, s)
-    _stroke(cr, color, stroke)
-    n = name
-
-    def rect(rx, ry, rw, rh, r=3):
-        _round_rect(cr, rx, ry, rw, rh, r)
-        cr.stroke()
-
-    def fill_rect(rx, ry, rw, rh, r=3):
-        _round_rect(cr, rx, ry, rw, rh, r)
-        cr.set_source_rgba(*rgba(color))
-        cr.fill()
-
-    if n in ('terminal', 'console'):
-        rect(2.5, 4, 19, 16, 3)
-        cr.move_to(6.5, 9.5); cr.line_to(9.5, 12); cr.line_to(6.5, 14.5); cr.stroke()
-        cr.move_to(11.5, 15); cr.line_to(17, 15); cr.stroke()
-    elif n in ('files', 'folder'):
-        cr.move_to(3, 7.5); cr.line_to(3, 19); cr.line_to(21, 19); cr.line_to(21, 8.5)
-        cr.line_to(12, 8.5); cr.line_to(10, 6); cr.line_to(3, 6); cr.close_path(); cr.stroke()
-    elif n == 'editor':
-        rect(4, 3.5, 16, 17, 3)
-        cr.move_to(8, 8.5); cr.line_to(16, 8.5); cr.stroke()
-        cr.move_to(8, 12); cr.line_to(16, 12); cr.stroke()
-        cr.move_to(8, 15.5); cr.line_to(13, 15.5); cr.stroke()
-    elif n == 'settings':
-        cr.arc(12, 12, 3.2, 0, math.pi * 2); cr.stroke()
-        for i in range(8):
-            a = i * math.pi / 4
-            cr.move_to(12 + math.cos(a) * 6.2, 12 + math.sin(a) * 6.2)
-            cr.line_to(12 + math.cos(a) * 8.6, 12 + math.sin(a) * 8.6)
-        cr.stroke()
-        cr.arc(12, 12, 8.6, 0, math.pi * 2); cr.stroke()
-    elif n == 'calc':
-        rect(5, 3, 14, 18, 3)
-        fill_rect(7.5, 6, 9, 3.4, 1.5)
-        for ry in (12.5, 16):
-            for rx in (7.5, 11.5, 15.5):
-                cr.arc(rx, ry, 1.05, 0, math.pi * 2); cr.fill()
-    elif n == 'viewer':
-        rect(3, 5, 18, 14, 3)
-        cr.move_to(6, 15.5); cr.line_to(10, 11.5); cr.line_to(13, 14); cr.line_to(16, 10.5); cr.line_to(18, 15.5)
-        cr.stroke()
-        cr.arc(8.2, 9.2, 1.3, 0, math.pi * 2); cr.stroke()
-    elif n in ('browser', 'globe'):
-        cr.arc(12, 12, 8.6, 0, math.pi * 2); cr.stroke()
-        cr.move_to(3.4, 12); cr.line_to(20.6, 12); cr.stroke()
-        cr.save(); cr.translate(12, 12); cr.scale(0.45, 1); cr.arc(0, 0, 8.6, 0, math.pi * 2); cr.restore(); cr.stroke()
-    elif n in ('menu', 'apps'):
-        for ry in (6.5, 12, 17.5):
-            for rx in (5.5, 12, 18.5):
-                cr.arc(rx, ry, 1.55, 0, math.pi * 2); cr.fill()
-    elif n in ('power', 'shutdown'):
-        cr.arc(12, 12.6, 7.2, -math.pi * 0.32, math.pi * 1.32); cr.stroke()
-        cr.move_to(12, 3.2); cr.line_to(12, 11.4); cr.stroke()
-    elif n == 'reboot':
-        cr.arc(12, 12, 7.4, math.pi * 0.35, math.pi * 1.65); cr.stroke()
-        cr.move_to(17.4, 5.6); cr.line_to(18.4, 10.4); cr.line_to(13.6, 9.4); cr.close_path()
-        cr.set_source_rgba(*rgba(color)); cr.fill()
-    elif n == 'close':
-        cr.move_to(6.4, 6.4); cr.line_to(17.6, 17.6); cr.stroke()
-        cr.move_to(17.6, 6.4); cr.line_to(6.4, 17.6); cr.stroke()
-    elif n == 'minimize':
-        cr.move_to(6.5, 15.5); cr.line_to(17.5, 15.5); cr.stroke()
-    elif n == 'maximize':
-        rect(6, 6, 12, 12, 2.5)
-    elif n == 'restore':
-        rect(8, 5.5, 10.5, 10.5, 2.5)
-        cr.move_to(5.5, 8.5); cr.line_to(5.5, 18.5); cr.line_to(15.5, 18.5); cr.stroke()
-    elif n == 'search':
-        cr.arc(10.8, 10.8, 5.6, 0, math.pi * 2); cr.stroke()
-        cr.move_to(15.2, 15.2); cr.line_to(20, 20); cr.stroke()
-    elif n == 'file':
-        cr.move_to(6, 3.5); cr.line_to(14, 3.5); cr.line_to(18, 7.5); cr.line_to(18, 20.5); cr.line_to(6, 20.5)
-        cr.close_path(); cr.stroke()
-        cr.move_to(14, 3.5); cr.line_to(14, 7.5); cr.line_to(18, 7.5); cr.stroke()
-    elif n == 'home':
-        cr.move_to(3.5, 11.5); cr.line_to(12, 4); cr.line_to(20.5, 11.5); cr.stroke()
-        cr.move_to(6, 11); cr.line_to(6, 20); cr.line_to(18, 20); cr.line_to(18, 11); cr.stroke()
-    elif n == 'back':
-        cr.move_to(14.5, 5.5); cr.line_to(8, 12); cr.line_to(14.5, 18.5); cr.stroke()
-    elif n == 'forward':
-        cr.move_to(9.5, 5.5); cr.line_to(16, 12); cr.line_to(9.5, 18.5); cr.stroke()
-    elif n == 'up':
-        cr.move_to(5.5, 14.5); cr.line_to(12, 8); cr.line_to(18.5, 14.5); cr.stroke()
-    elif n == 'plus':
-        cr.move_to(12, 5.5); cr.line_to(12, 18.5); cr.stroke()
-        cr.move_to(5.5, 12); cr.line_to(18.5, 12); cr.stroke()
-    elif n == 'trash':
-        cr.move_to(5.5, 7); cr.line_to(18.5, 7); cr.stroke()
-        cr.move_to(9.5, 7); cr.line_to(9.8, 4.5); cr.line_to(14.2, 4.5); cr.line_to(14.5, 7); cr.stroke()
-        cr.move_to(7, 7); cr.line_to(7.9, 20); cr.line_to(16.1, 20); cr.line_to(17, 7); cr.stroke()
-    elif n == 'refresh':
-        cr.arc(12, 12, 7.2, math.pi * 0.25, math.pi * 1.75); cr.stroke()
-        cr.move_to(4.4, 6.2); cr.line_to(5.4, 11.6); cr.line_to(10.6, 10.2); cr.close_path()
-        cr.set_source_rgba(*rgba(color)); cr.fill()
-    elif n in ('wallpaper', 'image'):
-        rect(3.5, 5, 17, 14, 3)
-        cr.move_to(6, 15.8); cr.line_to(10.5, 10.8); cr.line_to(14, 13.8); cr.line_to(17.8, 9.4); cr.stroke()
-    elif n == 'info':
-        cr.arc(12, 12, 8.6, 0, math.pi * 2); cr.stroke()
-        cr.arc(12, 7.8, 1.15, 0, math.pi * 2); cr.fill()
-        cr.move_to(12, 11); cr.line_to(12, 17); cr.stroke()
-    elif n in ('volume', 'speaker'):
-        cr.move_to(4.5, 10); cr.line_to(8, 10); cr.line_to(12, 6.5); cr.line_to(12, 17.5); cr.line_to(8, 14); cr.line_to(4.5, 14)
-        cr.close_path(); cr.stroke()
-        cr.arc(13.5, 12, 4.2, -math.pi * 0.5, math.pi * 0.5); cr.stroke()
-    elif n == 'wifi':
-        for r, a in ((8.4, 0.35), (5.8, 0.6), (3.2, 0.9)):
-            cr.arc(12, 17.5, r, math.pi * 1.15, math.pi * 1.85); cr.stroke()
-        cr.arc(12, 17, 1.15, 0, math.pi * 2); cr.fill()
-    elif n == 'battery':
-        rect(3, 8, 15, 8, 2.5)
-        fill_rect(19, 10.6, 2, 2.8, 1)
-        fill_rect(5, 10, 6, 4, 1.2)
-    elif n == 'user':
-        cr.arc(12, 8.6, 3.6, 0, math.pi * 2); cr.stroke()
-        cr.arc(12, 20, 7.2, math.pi * 1.15, math.pi * 1.85); cr.stroke()
-    elif n == 'grid':
-        for ry in (5, 12.5):
-            for rx in (5, 12.5):
-                rect(rx, ry, 6.5, 6.5, 2)
-    elif n == 'cut':
-        cr.move_to(6.5, 4.5); cr.line_to(15.5, 17.5); cr.stroke()
-        cr.move_to(17.5, 4.5); cr.line_to(8.5, 17.5); cr.stroke()
-        cr.arc(6.4, 19, 2.4, 0, math.pi * 2); cr.stroke()
-        cr.arc(17.6, 19, 2.4, 0, math.pi * 2); cr.stroke()
-    elif n == 'copy':
-        rect(7.5, 7.5, 12, 12, 2.5)
-        cr.move_to(4.5, 15.5); cr.line_to(4.5, 4.5); cr.line_to(15.5, 4.5); cr.stroke()
-    elif n == 'paste':
-        rect(5, 6, 14, 15, 3)
-        fill_rect(9, 3.5, 6, 4, 1.5)
-    elif n == 'edit':
-        cr.move_to(5, 19); cr.line_to(6.2, 14.6); cr.line_to(16.2, 4.6); cr.line_to(19.4, 7.8)
-        cr.line_to(9.4, 17.8); cr.close_path(); cr.stroke()
-    elif n == 'save':
-        cr.move_to(4.5, 6); cr.line_to(4.5, 19.5); cr.line_to(19.5, 19.5); cr.line_to(19.5, 9.5); cr.line_to(15.5, 4.5)
-        cr.line_to(4.5, 4.5); cr.close_path(); cr.stroke()
-        rect(8, 4.5, 7, 5, 1.2)
-    elif n == 'open':
-        cr.move_to(4, 10); cr.line_to(20, 10); cr.stroke()
-        cr.move_to(6, 10); cr.line_to(8.5, 19.5); cr.line_to(20.5, 19.5); cr.line_to(20, 10); cr.stroke()
-        cr.move_to(7, 10); cr.line_to(7, 5.5); cr.line_to(13, 5.5); cr.stroke()
-    elif n in ('window', 'desktop'):
-        rect(3, 5, 18, 14, 3)
-        fill_rect(6, 8, 12, 2.4, 1.2)
-    elif n == 'lock':
-        rect(5.5, 10.5, 13, 10, 3)
-        cr.arc(12, 10.5, 4.2, math.pi, 0); cr.stroke()
-    else:  # 未知图标 → 圆点占位（保持视觉一致）
-        cr.arc(12, 12, 3.2, 0, math.pi * 2); cr.fill()
-    cr.restore()
+def pad(widget, value=16):
+    for side in ('top', 'bottom', 'start', 'end'):
+        getattr(widget, 'set_margin_' + side)(value)
+    return widget
 
 
-def _round_rect(cr, x, y, w, h, r):
-    r = min(r, w / 2, h / 2)
-    cr.new_path()
-    cr.arc(x + r, y + r, r, math.pi, math.pi * 1.5)
-    cr.arc(x + w - r, y + r, r, math.pi * 1.5, math.pi * 2)
-    cr.arc(x + w - r, y + h - r, r, 0, math.pi * 0.5)
-    cr.arc(x + r, y + h - r, r, math.pi * 0.5, math.pi)
-    cr.close_path()
+def box(vertical=False, spacing=8):
+    return Gtk.Box(orientation=Gtk.Orientation.VERTICAL if vertical else Gtk.Orientation.HORIZONTAL, spacing=spacing)
 
 
-def paint_wallpaper(cr, w, h, variant='aurora'):
-    """自研壁纸：深空渐变 + 星点 + 极光弧 + 几何网格（Cairo 绘制，无资源文件）
-    variant: aurora（靛蓝紫+青绿）/ midnight（深蓝+青）/ graphite（石墨灰+淡紫）
-    """
-    palettes = {
-        'aurora': ((0x0B / 255, 0x0F / 255, 0x1A / 255), (0x16 / 255, 0x1E / 255, 0x33 / 255), ACCENT, ACCENT2),
-        'midnight': ((0x06 / 255, 0x0D / 255, 0x1C / 255), (0x0E / 255, 0x1F / 255, 0x3A / 255), (0x3F / 255, 0x8C / 255, 0xFF / 255), (0x39 / 255, 0xD2 / 255, 0xFF / 255)),
-        'graphite': ((0x0D / 255, 0x0E / 255, 0x12 / 255), (0x1B / 255, 0x1D / 255, 0x24 / 255), (0x9A / 255, 0x8F / 255, 0xFF / 255), (0x7A / 255, 0x86 / 255, 0x9E / 255)),
-    }
-    g0, g1, c1, c2 = palettes.get(variant, palettes['aurora'])
-
-    grad = _linear(cr, 0, 0, w, h)
-    grad.add_color_stop_rgb(0, *g0)
-    grad.add_color_stop_rgb(0.55, *g1)
-    grad.add_color_stop_rgb(1, *g0)
-    cr.set_source(grad)
-    cr.rectangle(0, 0, w, h)
-    cr.fill()
-
-    # 极光弧
-    for (cx, cy, r, col, alpha) in (
-        (w * 0.18, h * 1.05, h * 0.95, c1, 0.20),
-        (w * 0.86, h * 1.12, h * 1.05, c2, 0.13),
-        (w * 0.5, -h * 0.35, h * 0.8, c1, 0.08),
-    ):
-        g = _radial(cr, cx, cy, r)
-        g.add_color_stop_rgba(0, col[0], col[1], col[2], alpha)
-        g.add_color_stop_rgba(1, col[0], col[1], col[2], 0.0)
-        cr.set_source(g)
-        cr.rectangle(0, 0, w, h)
-        cr.fill()
-
-    # 细网格
-    cr.set_source_rgba(1, 1, 1, 0.028)
-    cr.set_line_width(1)
-    step = 48
-    for gx in range(0, int(w) + 1, step):
-        cr.move_to(gx + 0.5, 0); cr.line_to(gx + 0.5, h)
-    for gy in range(0, int(h) + 1, step):
-        cr.move_to(0, gy + 0.5); cr.line_to(w, gy + 0.5)
-    cr.stroke()
-
-    # 星点（确定性伪随机，保证每次一致）
-    seed = 20260927
-    cr.set_source_rgba(1, 1, 1, 0.5)
-    for i in range(90):
-        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-        px = (seed / 0x7FFFFFFF) * w
-        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-        py = (seed / 0x7FFFFFFF) * h * 0.72
-        seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
-        rr = 0.5 + (seed / 0x7FFFFFFF) * 1.3
-        cr.set_source_rgba(1, 1, 1, 0.10 + 0.38 * (seed / 0x7FFFFFFF))
-        cr.arc(px, py, rr, 0, math.pi * 2)
-        cr.fill()
-
-    # 中央品牌水印
-    cx, cy = w / 2, h * 0.42
-    draw_brandmark(cr, cx - 34, cy - 34, 68, alpha=0.16)
-    cr.select_font_face('Noto Sans CJK SC', 0, 0)
-    cr.set_font_size(15)
-    cr.set_source_rgba(1, 1, 1, 0.20)
-    text = 'CIBYP-VM-OS'
-    ext = cr.text_extents(text)
-    cr.move_to(cx - ext.width / 2 - ext.x_bearing, cy + 62)
-    cr.show_text(text)
+ICON_COLORS = dict(files='#e6ae55', folder='#e6ae55', editor='#66a6bc', browser='#6a94de', terminal='#566583', settings='#9d8cca', calc='#dd92a9', image='#75a98c', viewer='#75a98c', info='#7694bd')
 
 
-def draw_brandmark(cr, x, y, size, alpha=1.0, color=None):
-    """品牌标记：圆角方 + 双环（自研）"""
-    col = color or ACCENT
-    cr.save()
-    cr.translate(x, y)
-    s = size / 100.0
-    cr.scale(s, s)
-    g = _linear(cr, 0, 0, 100, 100)
-    g.add_color_stop_rgba(0, col[0], col[1], col[2], 0.95 * alpha)
-    g.add_color_stop_rgba(1, ACCENT2[0], ACCENT2[1], ACCENT2[2], 0.85 * alpha)
-    _round_rect(cr, 0, 0, 100, 100, 26)
-    cr.set_source(g)
-    cr.fill()
-    cr.set_source_rgba(1, 1, 1, 0.92 * alpha)
-    cr.set_line_width(7)
-    cr.arc(50, 50, 26, math.pi * 0.15, math.pi * 1.75)
-    cr.stroke()
-    cr.arc(50, 50, 12, 0, math.pi * 2)
-    cr.fill()
-    cr.restore()
+def icon(name, size=20, tile=False):
+    area = Gtk.DrawingArea()
+    area.set_content_width(size)
+    area.set_content_height(size)
+    def draw(_area, cr, width, height):
+        actual = min(width, height)
+        if tile:
+            cr.set_source_rgb(*rgb(ICON_COLORS.get(name, accent_color(_state))))
+            _round_rect(cr, 0, 0, actual, actual, actual*.25)
+            cr.fill()
+            cr.set_source_rgba(1, 1, 1, .18)
+            _round_rect(cr, 3, 3, actual-6, actual*.4, actual*.2)
+            cr.fill()
+            draw_icon(cr, name, actual*.19, actual*.19, actual*.62, (1, 1, 1), 1.6)
+        else:
+            draw_icon(cr, name, (width-actual)/2, (height-actual)/2, actual, color())
+    area.set_draw_func(draw)
+    return area
 
 
-def _linear(cr, x0, y0, x1, y1):
-    import cairo
-    return cairo.LinearGradient(x0, y0, x1, y1)
+def button(text='', callback=None, glyph=None, css=None, tip=None):
+    item = Gtk.Button()
+    content = box(spacing=7)
+    if glyph:
+        content.append(icon(glyph))
+    if text:
+        content.append(label(text))
+    item.set_child(content)
+    if callback:
+        item.connect('clicked', lambda *_: safe(callback))
+    if css:
+        for name in css.split():
+            item.add_css_class(name)
+    if tip:
+        item.set_tooltip_text(tip)
+    return item
 
 
-def _radial(cr, cx, cy, r):
-    import cairo
-    return cairo.RadialGradient(cx, cy, 0, cx, cy, max(r, 1))
+def safe(callback):
+    try:
+        callback()
+    except Exception as error:
+        print(f'Application action: {error}', file=sys.stderr)
 
 
-# ------------------------------------------------------------------ layer-shell 预加载
+def launch(command, cwd=None):
+    argv = list(command)
+    own = ROOT / 'bin' / argv[0]
+    if own.is_file():
+        argv = [sys.executable, str(own), *argv[1:]]
+    environment = dict(os.environ)
+    environment.pop('LD_PRELOAD', None)
+    return subprocess.Popen(argv, cwd=cwd, env=environment, start_new_session=True)
 
-_LAYER_SHELL_ENV = 'CIBYP_LAYER_SHELL_PRELOADED'
+
+def open_path(path):
+    path = Path(path)
+    if path.is_dir():
+        launch(['cibyp-files', str(path)])
+    elif path.suffix.lower() in ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg'):
+        launch(['cibyp-viewer', str(path)])
+    elif path.suffix.lower() in ('.txt', '.md', '.py', '.js', '.json', '.html', '.css', '.sh', '.yaml', '.log', '.ini', '.conf', '.xml', '.csv'):
+        launch(['cibyp-editor', str(path)])
+    else:
+        Gio.AppInfo.launch_default_for_uri(path.resolve().as_uri(), None)
 
 
-def _find_layer_shell_lib():
-    import glob
-    for pat in ('/usr/lib/*/libgtk4-layer-shell.so.0', '/usr/lib/libgtk4-layer-shell.so.0'):
-        hits = glob.glob(pat)
-        if hits:
-            return hits[0]
-    return ''
+def background(operation, complete):
+    def run():
+        try:
+            result, error = operation(), None
+        except Exception as caught:
+            result, error = None, caught
+        GLib.idle_add(lambda: (complete(result, error), False)[1])
+    threading.Thread(target=run, daemon=True).start()
+
+
+def dialog(parent, title, detail='', actions=None, entry=None):
+    window = Gtk.Window(application=parent.get_application(), title=title, transient_for=parent, modal=True)
+    window.add_css_class('campus')
+    window.set_default_size(420, -1)
+    window.set_resizable(False)
+    content = pad(box(True, 14), 22)
+    content.append(label(title, 'heading'))
+    if detail:
+        description = label(detail, 'dim')
+        description.set_wrap(True)
+        description.set_max_width_chars(55)
+        content.append(description)
+    field = Gtk.Entry(text=entry) if entry is not None else None
+    if field:
+        content.append(field)
+    row = box()
+    row.set_halign(Gtk.Align.END)
+    def choose(callback):
+        try:
+            if callback:
+                callback(field.get_text() if field else None)
+            window.set_modal(False)
+            window.destroy()
+            parent.present()
+        except Exception as error:
+            notice = label(str(error), 'dim')
+            notice.set_wrap(True)
+            content.prepend(notice)
+    choices = actions or [('知道了', None)]
+    for index, (text, callback) in enumerate(choices):
+        row.append(button(text, lambda cb=callback: choose(cb), css='primary' if index else None))
+    content.append(row)
+    window.set_child(content)
+    window.present()
+    if field:
+        field.grab_focus()
+        field.select_region(0, -1)
+        field.connect('activate', lambda *_: choose(choices[-1][1]))
+    shortcuts(window, {'escape': window.close})
+    return window
+
+
+def choose_file(parent, callback, save=False, name=None, folder=False):
+    action = Gtk.FileChooserAction.SELECT_FOLDER if folder else Gtk.FileChooserAction.SAVE if save else Gtk.FileChooserAction.OPEN
+    chooser = Gtk.FileChooserNative(title='保存文件' if save else '打开文件', transient_for=parent, action=action, accept_label='保存' if save else '打开', cancel_label='取消')
+    if save and name:
+        chooser.set_current_name(name)
+    def response(_chooser, result):
+        if result == Gtk.ResponseType.ACCEPT and chooser.get_file():
+            safe(lambda: callback(chooser.get_file().get_path()))
+        chooser.destroy()
+    chooser.connect('response', response)
+    chooser.show()
+    parent._file_chooser = chooser
+
+
+def dismiss_popovers(window):
+    for menu in list(_popovers):
+        if menu.get_root() == window:
+            menu.popdown()
+            menu.set_visible(False)
+            if menu.get_parent():
+                menu.unparent()
+            if menu in _popovers:
+                _popovers.remove(menu)
+
+
+def popover(anchor, options, x=None, y=None):
+    dismiss_popovers(anchor.get_root())
+    menu = Gtk.Popover()
+    _popovers.append(menu)
+    menu.set_parent(anchor)
+    menu.set_autohide(True)
+    menu.set_has_arrow(False)
+    if x is not None:
+        rectangle = Gdk.Rectangle()
+        rectangle.x, rectangle.y, rectangle.width, rectangle.height = int(x), int(y), 1, 1
+        menu.set_pointing_to(rectangle)
+    content = box(True, 2)
+    for option in options:
+        if option is None:
+            content.append(Gtk.Separator())
+            continue
+        title, callback, glyph = option[:3]
+        row = button(title, lambda cb=callback: (menu.popdown(), cb()), glyph, 'flat')
+        if len(option) > 3:
+            row.set_sensitive(bool(option[3]))
+        content.append(row)
+    menu.set_child(content)
+    def closed(*_):
+        if menu in _popovers:
+            _popovers.remove(menu)
+        if menu.get_parent():
+            menu.unparent()
+    menu.connect('closed', closed)
+    menu.popup()
+    return menu
+
+
+def context_menu(widget, options):
+    widget._campus_context_menu = True
+    gesture = Gtk.GestureClick()
+    gesture.set_button(3)
+    def pressed(_gesture, _count, x, y):
+        target = widget.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while target and target != widget:
+            if getattr(target, '_campus_context_menu', False):
+                return
+            target = target.get_parent()
+        popover(widget, options() if callable(options) else options, x, y)
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+    gesture.connect('pressed', pressed)
+    widget.add_controller(gesture)
+
+
+def shortcuts(widget, handlers):
+    controller = Gtk.EventControllerKey()
+    controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    def pressed(_controller, key, _code, state):
+        prefix = ''
+        for mask, token in ((Gdk.ModifierType.CONTROL_MASK, 'ctrl+'), (Gdk.ModifierType.ALT_MASK, 'alt+'), (Gdk.ModifierType.SHIFT_MASK, 'shift+')):
+            if state & mask:
+                prefix += token
+        callback = handlers.get(prefix + (Gdk.keyval_name(key) or '').lower())
+        if callback:
+            try:
+                return callback() is not False
+            except Exception as error:
+                print(f'Keyboard action: {error}', file=sys.stderr)
+                return True
+        return False
+    controller.connect('key-pressed', pressed)
+    widget.add_controller(controller)
+
+
+def sway(command):
+    return subprocess.run(['swaymsg', '-r', command], capture_output=True, timeout=2)
+
+
+def shell_command(command):
+    import socket
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(2)
+        client.connect(str(Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp')) / 'cibyp-shell.sock'))
+        client.sendall(command.encode())
+
+
+def window_frame(window, title, glyph):
+    window.add_css_class('campus')
+    _windows.append(window)
+    window.connect('destroy', lambda *_: _windows.remove(window) if window in _windows else None)
+    header = Gtk.HeaderBar()
+    header.set_show_title_buttons(False)
+    heading = box(spacing=9)
+    heading.append(icon(glyph, 26, True))
+    heading.append(label(title))
+    header.pack_start(heading)
+    def minimize():
+        shell_command(f'minimize-pid {os.getpid()}')
+    def maximize():
+        shell_command(f'maximize-pid {os.getpid()}')
+    for text, callback, name in reversed((('−', minimize, '最小化'), ('□', maximize, '最大化 / 还原'), ('×', window.close, '关闭'))):
+        header.pack_end(button(text, callback, css='flat close' if text == '×' else 'flat', tip=name))
+    gesture = Gtk.GestureClick()
+    gesture.set_button(1)
+    gesture.connect('pressed', lambda _gesture, count, _x, _y: maximize() if count == 2 else None)
+    header.add_controller(gesture)
+    context_menu(header, [('最小化', minimize, 'back'), ('最大化 / 还原', maximize, 'grid'), None, ('关闭窗口', window.close, 'close')])
+    window.set_titlebar(header)
+    return header
 
 
 def ensure_layer_shell_preload():
-    """gtk4-layer-shell 与 GTK4 存在动态链接顺序限制：必须 LD_PRELOAD 才能让窗口
-    变成 layer surface。做法：本进程未预加载时，带 LD_PRELOAD 重新 exec 自己
-    （幂等；用环境变量防死循环）。只影响自研 GTK 应用，不会污染 sway/bash 等进程。"""
-    lib = _find_layer_shell_lib()
-    if not lib:
-        return
-    if lib in os.environ.get('LD_PRELOAD', ''):
-        return
-    if os.environ.get(_LAYER_SHELL_ENV) == '1':
-        return
-    env = dict(os.environ)
-    env['LD_PRELOAD'] = (lib + ':' + env.get('LD_PRELOAD', '')).strip(':')
-    env[_LAYER_SHELL_ENV] = '1'
-    try:
-        os.execve(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:], env)
-    except Exception:
-        pass  # 失败则继续（面板会退化为普通窗口，不致命）
-
-
-_INSTANCE_LOCKS = {}
+    libraries = glob.glob('/usr/lib/*/libgtk4-layer-shell.so.0')
+    if libraries and libraries[0] not in os.environ.get('LD_PRELOAD', '') and os.environ.get('CIBYP_LAYER_READY') != '1':
+        environment = dict(os.environ, LD_PRELOAD=libraries[0], CIBYP_LAYER_READY='1')
+        os.execve(sys.executable, [sys.executable, *sys.argv], environment)
 
 
 def acquire_single_instance(name):
-    """按名字获取单实例锁（$XDG_RUNTIME_DIR/<name>.lock，进程退出自动释放）。
-    返回 True=获得锁，False=已有实例在跑。用于外壳/壁纸这类必须唯一的常驻组件。"""
+    import fcntl
+    stream = (Path(os.environ.get('XDG_RUNTIME_DIR', '/tmp')) / f'cibyp-{name}.lock').open('w')
     try:
-        import fcntl
-    except Exception:
-        return True
-    rt = os.environ.get('XDG_RUNTIME_DIR') or '/tmp'
-    path = os.path.join(rt, name + '.lock')
-    try:
-        fh = open(path, 'w')
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _INSTANCE_LOCKS[name] = fh
-        return True
-    except Exception:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
         return False
+    globals()['_lock_' + name] = stream
+    return True
 
 
-def try_layer_shell(window, *, namespace=None, layer='top', anchors=('top', 'left', 'right'), exclusive=None):
-    """安全初始化 layer-shell：任何失败都返回 False，让调用方回退为普通窗口。
-    返回 True 表示已是 layer surface（后续 LayerShell 调用才有效）。"""
-    try:
-        gi.require_version('Gtk4LayerShell', '1.0')
-        from gi.repository import Gtk4LayerShell as LayerShell  # noqa: E402
-    except Exception as exc:  # noqa: BLE001
-        print(f'cibypui: 无法加载 Gtk4LayerShell（{exc}），回退普通窗口', file=sys.stderr)
-        return False
-    try:
-        LayerShell.init_for_window(window)
-    except Exception as exc:  # noqa: BLE001
-        print(f'cibypui: layer-shell 不可用（{exc}），回退普通窗口', file=sys.stderr)
-        return False
-    try:
-        if namespace:
-            LayerShell.set_namespace(window, namespace)
-        layer_map = {
-            'background': LayerShell.Layer.BACKGROUND,
-            'bottom': LayerShell.Layer.BOTTOM,
-            'top': LayerShell.Layer.TOP,
-            'overlay': LayerShell.Layer.OVERLAY,
-        }
-        LayerShell.set_layer(window, layer_map.get(layer, LayerShell.Layer.TOP))
-        edge_map = {
-            'top': LayerShell.Edge.TOP, 'bottom': LayerShell.Edge.BOTTOM,
-            'left': LayerShell.Edge.LEFT, 'right': LayerShell.Edge.RIGHT,
-        }
-        for a in anchors:
-            LayerShell.set_anchor(window, edge_map[a], True)
-        if exclusive is not None:
-            LayerShell.set_exclusive_zone(window, exclusive)
-        # 只有真正能设扩展区/锚点，才算 layer-shell 可用
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print(f'cibypui: layer-shell 配置失败（{exc}），回退普通窗口', file=sys.stderr)
-        return False
+def try_layer_shell(window, namespace=None, layer='top', anchors=('bottom', 'left', 'right'), exclusive=None):
+    gi.require_version('Gtk4LayerShell', '1.0')
+    from gi.repository import Gtk4LayerShell as Layer
+    if not Layer.is_supported():
+        raise RuntimeError('需要支持 layer-shell 的 Wayland 会话')
+    Layer.init_for_window(window)
+    Layer.set_namespace(window, namespace or 'cibyp-panel')
+    Layer.set_keyboard_mode(window, Layer.KeyboardMode.ON_DEMAND)
+    Layer.set_layer(window, {'background': Layer.Layer.BACKGROUND, 'bottom': Layer.Layer.BOTTOM, 'top': Layer.Layer.TOP, 'overlay': Layer.Layer.OVERLAY}[layer])
+    for edge in anchors:
+        Layer.set_anchor(window, getattr(Layer.Edge, edge.upper()), True)
+    if exclusive is not None:
+        Layer.set_exclusive_zone(window, exclusive)
+    return True
 
 
-def layer_shell_geometry_fallback(window, width, height):
-    """回退普通窗口时的尺寸/最小尺寸设置（位置由 sway 规则处理）"""
-    try:
-        window.set_default_size(width, height)
-        window.set_size_request(min(width, 640), height)
-    except Exception:
-        pass
+def app_icon_name(value, name=''):
+    value = (value + name).lower()
+    for token, glyph in (('file', 'files'), ('editor', 'editor'), ('terminal', 'terminal'), ('foot', 'terminal'), ('chrom', 'browser'), ('firefox', 'browser'), ('browser', 'browser'), ('calc', 'calc'), ('setting', 'settings'), ('view', 'image'), ('about', 'info')):
+        if token in value:
+            return glyph
+    return 'grid'
 
 
-# ------------------------------------------------------------------ 小工具
-
-def arg_path(default=''):
-    """取命令行里第一个非选项参数（应用自定义解析，不交给 Gtk.Application）"""
-    for a in sys.argv[1:]:
-        if not a.startswith('-'):
-            return os.path.expanduser(a)
-    return default
+def panel_height():
+    return 64
 
 
-def run_async(fn, *args):
-    """在 GLib 主循环里安全执行（供定时器/回调）"""
-    GLib.idle_add(lambda: (fn(*args), False)[1])
-
-
-def launch(cmd):
-    """启动外部程序（分离进程）"""
-    try:
-        Gio.Subprocess.new(cmd, Gio.SubprocessFlags.NONE)
-    except Exception:
-        pass
-
-
-def which(name):
-    return shutil.which(name) or ''
-
-
-def app_icon_name(app_id, name=''):
-    """把 .desktop 的 id/名字映射到自绘图标名"""
-    s = f'{app_id or ""} {name or ""}'.lower()
-    for key, icon in (
-        ('terminal', 'terminal'), ('console', 'terminal'), ('foot', 'terminal'),
-        ('files', 'files'), ('file', 'files'), ('nautilus', 'files'),
-        ('edit', 'editor'), ('writer', 'editor'), ('text', 'editor'),
-        ('settings', 'settings'), ('control', 'settings'),
-        ('calc', 'calc'),
-        ('viewer', 'viewer'), ('image', 'viewer'),
-        ('chrom', 'browser'), ('firefox', 'browser'), ('browser', 'browser'),
-        ('about', 'info'),
-    ):
-        if key in s:
-            return icon
-    return 'window'
+def run_application(kind, window_type):
+    application = Gtk.Application(application_id=f'com.b5software.cibyp.{kind}', flags=Gio.ApplicationFlags.NON_UNIQUE)
+    def activate(app):
+        install_css()
+        window_type(app).present()
+    application.connect('activate', activate)
+    return application.run([sys.argv[0]])

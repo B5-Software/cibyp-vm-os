@@ -5,7 +5,7 @@ Name=浏览器
 Name[en]=Browser
 Comment=Chromium 浏览器
 Exec=chromium --ozone-platform=wayland --start-maximized
-Icon=web-browser
+Icon=cibyp-browser
 Terminal=false
 Categories=Network;WebBrowser;
 StartupNotify=false

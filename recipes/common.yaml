@@ -11,7 +11,7 @@
 #   version       CIBYP-VM-OS 版本号
 
 {{- $arch := or .architecture "amd64" }}
-{{- $version := or .version "0.1.0" }}
+{{- $version := or .version "0.3.0" }}
 
 architecture: {{$arch}}
 
