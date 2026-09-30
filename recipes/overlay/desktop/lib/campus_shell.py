@@ -45,13 +45,16 @@ class ShellWindow(Gtk.ApplicationWindow):
         self.manager = WindowManager()
         self.windows, self.signature, self.polling = [], None, False
         self.popup = None
+        ui.shortcuts(self, {'escape': lambda: self.popup.popdown() if self.popup else None})
         self.skip_super = False
         self.binding_process = subprocess.Popen(['swaymsg', '-m', '-r', '-t', 'subscribe', '["binding"]'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         def bindings():
             for line in self.binding_process.stdout:
                 try:
                     binding = json.loads(line).get('binding', {})
-                    if 'Mod4' in binding.get('event_state_mask', []) and binding.get('symbols') != ['Super_L']:
+                    if binding.get('command') == 'nop campus-super-down':
+                        self.skip_super = False
+                    elif 'Mod4' in binding.get('event_state_mask', []) and binding.get('symbols') != ['Super_L']:
                         self.skip_super = True
                 except ValueError:
                     pass
@@ -192,26 +195,64 @@ class ShellWindow(Gtk.ApplicationWindow):
         pinned.remove(key) if key in pinned else pinned.append(key)
         ui.set_preferences(pinned=pinned)
 
-    def create_popup(self, anchor, child):
+    def create_popup(self, anchor, child, keyboard=False):
         if self.popup:
             self.popup.popdown()
-        menu = Gtk.Popover()
-        menu.set_parent(anchor)
-        menu.set_position(Gtk.PositionType.TOP)
-        menu.set_has_arrow(False)
-        menu.set_autohide(True)
-        menu.set_child(child)
-        def closed(*_):
-            if self.popup == menu:
-                self.popup = None
-            GLib.idle_add(lambda: (menu.unparent(), False)[1])
-        menu.connect('closed', closed)
-        self.popup = menu
-        menu.popup()
+        self.popup_anchor = anchor
+        if keyboard:
+            # A global shortcut has no GTK pointer serial for a popup grab.
+            # Use a native layer window that owns focus and catches click-away.
+            menu = Gtk.ApplicationWindow(application=self.get_application())
+            menu.set_decorated(False)
+            menu.add_css_class('campus')
+            menu.add_css_class('campus-overlay')
+            ui.try_layer_shell(menu, 'campus-launcher', layer='overlay', anchors=('top', 'bottom', 'left', 'right'))
+            ui.layer_keyboard(menu, True)
+            overlay = Gtk.Overlay()
+            overlay.set_child(Gtk.Box())
+            child.add_css_class('popup-card')
+            child.set_halign(Gtk.Align.START)
+            child.set_valign(Gtk.Align.END)
+            child.set_margin_bottom(0)
+            overlay.add_overlay(child)
+            menu.set_child(overlay)
+            click = Gtk.GestureClick()
+            click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            def outside(_gesture, _count, x, y):
+                target = overlay.pick(x, y, Gtk.PickFlags.DEFAULT)
+                while target and target != child:
+                    target = target.get_parent()
+                if target != child:
+                    menu.close()
+            click.connect('pressed', outside)
+            overlay.add_controller(click)
+            ui.shortcuts(menu, {'escape': menu.close})
+            menu.popdown = menu.close
+            def closed(*_):
+                if self.popup == menu:
+                    self.popup = None
+                return False
+            menu.connect('close-request', closed)
+            self.popup = menu
+            menu.present()
+        else:
+            menu = Gtk.Popover()
+            menu.set_parent(anchor)
+            menu.set_position(Gtk.PositionType.TOP)
+            menu.set_has_arrow(False)
+            menu.set_autohide(True)
+            menu.set_child(child)
+            def closed(*_):
+                if self.popup == menu:
+                    self.popup = None
+                GLib.idle_add(lambda: (menu.unparent(), False)[1])
+            menu.connect('closed', closed)
+            self.popup = menu
+            menu.popup()
         return menu
 
-    def launcher(self):
-        if self.popup and self.popup.get_parent() == self.start_button:
+    def launcher(self, keyboard=False):
+        if self.popup and self.popup_anchor == self.start_button:
             self.popup.popdown()
             return
         content = ui.pad(ui.box(True, 15), 15)
@@ -289,7 +330,7 @@ class ShellWindow(Gtk.ApplicationWindow):
         footer.append(ui.label('CIBYP OS · Campus', 'dim', True))
         footer.append(ui.button('电源', self.power, 'power', 'flat'))
         content.append(footer)
-        self.create_popup(self.start_button, content)
+        self.create_popup(self.start_button, content, keyboard=keyboard)
         search.grab_focus()
 
     def calendar(self):
@@ -384,12 +425,12 @@ class ShellWindow(Gtk.ApplicationWindow):
         if name == 'menu-key':
             def released():
                 if not self.skip_super:
-                    self.launcher()
+                    self.launcher(keyboard=True)
                 self.skip_super = False
                 return False
             GLib.timeout_add(60, released)
             return
-        handlers = {'menu': self.launcher, 'calendar': self.calendar, 'power': self.power, 'screenshot': self.screenshot, 'desktop': self.manager.show_desktop, 'maximize': self.manager.maximize, 'minimize': self.manager.minimize, 'next': self.manager.cycle, 'previous': lambda: self.manager.cycle(True), 'left': lambda: self.manager.snap('left'), 'right': lambda: self.manager.snap('right'), 'reload': self.theme_changed}
+        handlers = {'menu': lambda: self.launcher(keyboard=True), 'calendar': self.calendar, 'power': self.power, 'screenshot': self.screenshot, 'desktop': self.manager.show_desktop, 'maximize': self.manager.maximize, 'minimize': self.manager.minimize, 'next': self.manager.cycle, 'previous': lambda: self.manager.cycle(True), 'left': lambda: self.manager.snap('left'), 'right': lambda: self.manager.snap('right'), 'reload': self.theme_changed}
         if name in handlers:
             handlers[name]()
         elif name in ('minimize-pid', 'maximize-pid'):

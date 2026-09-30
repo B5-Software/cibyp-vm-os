@@ -11,7 +11,7 @@
 #   version       CIBYP-VM-OS 版本号
 
 {{- $arch := or .architecture "amd64" }}
-{{- $version := or .version "0.3.0" }}
+{{- $version := or .version "0.3.1" }}
 
 architecture: {{$arch}}
 
@@ -112,4 +112,4 @@ actions:
   - action: run
     chroot: true
     label: CIBYP 出厂配置
-    command: sh /opt/cibyp-overlay/setup.sh
+    command: env CIBYP_VERSION={{$version}} bash /opt/cibyp-overlay/setup.sh

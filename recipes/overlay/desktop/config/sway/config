@@ -21,7 +21,8 @@ for_window [app_id="com.b5software.cibyp.*"] border none
 for_window [app_id="com.b5software.cibyp.calc"] resize set 560 580
 for_window [app_id="com.b5software.cibyp.about"] resize set 560 490
 # GTK sends modal/dialog size hints; do not force every window to 960x640.
-bindsym --release Super_L exec cibypctl menu-key
+bindsym $mod+Super_L nop campus-super-down
+bindsym --release $mod+Super_L exec cibypctl menu-key
 bindsym $mod+space exec cibypctl menu
 bindsym $mod+Return exec $term
 bindsym $mod+e exec cibyp-files

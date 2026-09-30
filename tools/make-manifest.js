@@ -81,7 +81,7 @@ function main() {
     licenseNote:
       'CIBYP-VM-OS is based on Debian GNU/Linux. Debian is a registered trademark owned by ' +
       'Software in the Public Interest, Inc. CIBYP-VM-OS is not affiliated with or endorsed by the Debian project.',
-    sourceUrl: 'https://github.com/B5-Software/Could-I-Be-Your-Partner/tree/main/vm-os',
+    sourceUrl: 'https://github.com/B5-Software/cibyp-vm-os',
   };
 
   const artifacts = [];

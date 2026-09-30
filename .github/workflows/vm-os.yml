@@ -69,6 +69,11 @@ jobs:
         with:
           node-version: 24
 
+      - name: 原生桌面基础行为检查
+        run: |
+          python3 tests/test_desktop.py
+          python3 -m compileall -q recipes/overlay/desktop/lib recipes/overlay/desktop/session
+
       - name: 安装 debos（apt 优先，缺失则源码构建）
         run: |
           set -e

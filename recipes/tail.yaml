@@ -14,7 +14,7 @@
 
 {{- $arch := or .architecture "amd64" }}
 {{- $variant := or .variant "base" }}
-{{- $version := or .version "0.3.0" }}
+{{- $version := or .version "0.3.1" }}
 
 architecture: {{$arch}}
 

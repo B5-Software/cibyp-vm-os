@@ -65,7 +65,7 @@ try:
     if not config.is_file():
         config = Path('/etc/cibyp/sway/config')
     compositor = spawn(['sway', '--config', str(config)])
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 120
     ipc = None
     while time.monotonic() < deadline and not stopping:
         if compositor.poll() is not None:
@@ -80,7 +80,22 @@ try:
         raise RuntimeError('Wayland startup timed out')
     geometry = os.environ.get('CIBYP_GEOMETRY', '1280x800')
     width, height = map(int, geometry.split('x'))
-    outputs = json.loads(subprocess.check_output(['swaymsg', '-r', '-t', 'get_outputs']))
+    # Socket creation precedes IPC readiness, especially under arm64 TCG.
+    # Retry a bounded query instead of treating the first timeout as a crash.
+    outputs = None
+    while time.monotonic() < deadline and not stopping:
+        try:
+            response = subprocess.run(['swaymsg', '-r', '-t', 'get_outputs'], capture_output=True, text=True, timeout=8)
+            if response.returncode == 0:
+                outputs = json.loads(response.stdout)
+                break
+        except (subprocess.TimeoutExpired, ValueError):
+            pass
+        if compositor.poll() is not None:
+            raise RuntimeError('Sway exited while waiting for IPC')
+        time.sleep(.3)
+    if outputs is None:
+        raise RuntimeError('Wayland IPC startup timed out')
     for output in outputs:
         if output['name'].startswith('HEADLESS-'):
             subprocess.run(['swaymsg', 'output', output['name'], 'mode', f'{width}x{height}'], check=True, stdout=subprocess.DEVNULL)

@@ -55,6 +55,8 @@ def apply_theme():
     @define-color theme_selected_fg_color white;
     * { font-family: "Noto Sans CJK SC", "Noto Sans", sans-serif; font-size: 13px; }
     window.campus { background: BG; color: TEXT; }
+    window.campus.campus-overlay { background: transparent; }
+    .popup-card { background: SURFACE; color: TEXT; border: 1px solid LINE; border-radius: 15px; padding: 15px; box-shadow: 0 8px 20px SHADOW; }
     window.campus decoration { border-radius: 18px; box-shadow: 0 8px 24px SHADOW; }
     headerbar { background: SURFACE; color: TEXT; border-bottom: 1px solid LINE; min-height: 42px; padding: 5px 10px; box-shadow: none; }
     headerbar label { font-weight: 600; }
@@ -456,6 +458,11 @@ def try_layer_shell(window, namespace=None, layer='top', anchors=('bottom', 'lef
     if exclusive is not None:
         Layer.set_exclusive_zone(window, exclusive)
     return True
+
+
+def layer_keyboard(window, exclusive):
+    from gi.repository import Gtk4LayerShell as Layer
+    Layer.set_keyboard_mode(window, Layer.KeyboardMode.EXCLUSIVE if exclusive else Layer.KeyboardMode.ON_DEMAND)
 
 
 def app_icon_name(value, name=''):

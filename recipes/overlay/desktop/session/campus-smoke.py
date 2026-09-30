@@ -25,10 +25,13 @@ log_path = Path(tempfile.gettempdir())/f'cibyp-desktop-smoke-{os.getuid()}.log'
 children = []
 
 
-def wait(check, message, seconds=25):
+def wait(check, message, seconds=120):
     deadline = time.monotonic()+seconds
     while time.monotonic() < deadline:
-        value = check()
+        try:
+            value = check()
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+            value = False
         if value:
             return value
         time.sleep(.1)
@@ -67,9 +70,13 @@ try:
             wait(environment_file.is_file, 'Wayland session did not start')
             env.update(json.loads(environment_file.read_text()))
             wait((runtime/'cibyp-shell.sock').is_socket, 'Taskbar socket did not appear')
-            time.sleep(1)
             args.out_png.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(['grim', str(args.out_png)], env=env, check=True)
+            def rendered():
+                subprocess.run(['grim', str(args.out_png)], env=env, check=True, timeout=10)
+                frame = cairo.ImageSurface.create_from_png(str(args.out_png))
+                pixels, stride = bytes(frame.get_data()), frame.get_stride()
+                return args.out_png.stat().st_size > 20000 and pixels[(height-20)*stride+width*2:(height-20)*stride+width*2+3] != pixels[(height//2)*stride+width*2:(height//2)*stride+width*2+3]
+            wait(rendered, 'Desktop and taskbar did not render')
             screenshot = cairo.ImageSurface.create_from_png(str(args.out_png))
             assert (screenshot.get_width(), screenshot.get_height()) == (width, height), 'Incorrect output resolution'
             data = bytes(screenshot.get_data())
@@ -79,16 +86,19 @@ try:
             with socket.socket(socket.AF_UNIX) as control:
                 control.connect(str(runtime/'cibyp-shell.sock'))
                 control.sendall(b'menu\n')
-            time.sleep(.7)
             menu_png = Path(temporary)/'menu.png'
-            subprocess.run(['grim', str(menu_png)], env=env, check=True)
-            assert bytes(cairo.ImageSurface.create_from_png(str(menu_png)).get_data()) != data, 'Launcher did not open'
+            def menu_rendered():
+                subprocess.run(['grim', str(menu_png)], env=env, check=True, timeout=10)
+                pixels = bytes(cairo.ImageSurface.create_from_png(str(menu_png)).get_data())
+                offset = (height-150)*stride+40*4
+                return pixels[offset:offset+3] != data[offset:offset+3]
+            wait(menu_rendered, 'Launcher did not open')
             print('PASS launcher responds and changes the displayed frame', flush=True)
             expected = {'files', 'editor', 'calc', 'viewer', 'terminal', 'settings', 'about'}
             for kind in expected:
                 children.append(subprocess.Popen([sys.executable, '-u', str(root/'bin'/('cibyp-'+kind))], env=env, stdout=log, stderr=log, start_new_session=True))
             def applications():
-                tree = json.loads(subprocess.check_output(['swaymsg', '-r', '-t', 'get_tree'], env=env))
+                tree = json.loads(subprocess.check_output(['swaymsg', '-r', '-t', 'get_tree'], env=env, timeout=8))
                 return {node.get('app_id', '').split('.')[-1] for node in nodes(tree) if node.get('app_id')}
             wait(lambda: expected <= applications(), 'A built-in native application failed to open')
             time.sleep(.3)
