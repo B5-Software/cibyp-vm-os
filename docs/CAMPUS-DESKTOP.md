@@ -45,6 +45,6 @@ python3 tests/desktop-preview.py --duration 600 --port 5909
 python3 scripts/generate-icons.py
 ```
 
-桌面源码由本 OS 仓库构建进镜像，App 不携带或安装桌面更新包。`VERSION` 和配方默认版本为 `0.4.0`，推送 `vm-os-v0.4.0` 标签触发现有六组构建和 QEMU 冒烟；成功后发布系统盘、内核、校验和与运行时清单到 `vm-os-latest`。App 通过既有镜像下载/安装入口使用该版本。
+桌面源码由本 OS 仓库构建进镜像，App 不携带或安装桌面更新包。`VERSION` 和配方默认版本为 `0.4.1`，推送 `vm-os-v0.4.1` 标签触发现有六组构建和 QEMU 冒烟；成功后发布系统盘、内核、校验和与运行时清单到 `vm-os-latest`。App 通过既有镜像下载/安装入口使用该版本。
 
 镜像内使用 `cibyp-desktop-smoke --geometry 1280x800 --out-png /tmp/cibyp-desktop.png` 检查完整桌面、任务栏、开始菜单和七个原生应用。该脚本保留既有 CI 结果标记协议，同时使用独立临时会话。完整系统盘发布状态以对应版本 CI 与 Release 为准，原生 WSL 验证不替代 QEMU 系统盘检查。

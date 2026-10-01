@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.4.1
+
+- 为完整 Code-OSS 后端更新 base / desktop 的镜像体积预算至 680MB / 1150MB，full 保持 1600MB。0.4.0 六组构建及启动测试全部通过，发布被原有体积门禁拦截；实测 base 576–588MB、desktop 1040–1057MB。
+- 重新生成匹配版本的 OS 镜像、内核与运行时清单。
+
 ## 0.4.0
 
 - base、desktop、full 的 amd64/arm64 镜像内置完整 Code-OSS Remote Extension Host，支持远程扩展、语言服务、Git、PTY 终端及调试。

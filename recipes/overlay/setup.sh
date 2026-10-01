@@ -19,7 +19,7 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-CIBYP_VERSION="${CIBYP_VERSION:-0.4.0}"
+CIBYP_VERSION="${CIBYP_VERSION:-0.4.1}"
 CIBYP_BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 CIBYP_BASE_SUITE="$(. /etc/os-release && echo "${VERSION_CODENAME:-unknown}")"
 

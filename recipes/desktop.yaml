@@ -6,7 +6,7 @@
 # 目标体积 ≤ 750MB（qcow2, zstd）。
 
 {{- $arch := or .architecture "amd64" }}
-{{- $version := or .version "0.4.0" }}
+{{- $version := or .version "0.4.1" }}
 {{- $variant := "desktop" }}
 
 architecture: {{$arch}}
