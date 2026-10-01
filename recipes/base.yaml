@@ -6,7 +6,7 @@
 # 重型语言栈与数据库交给 full 变体，避免默认下载过大。
 
 {{- $arch := or .architecture "amd64" }}
-{{- $version := or .version "0.3.1" }}
+{{- $version := or .version "0.4.0" }}
 {{- $variant := "base" }}
 
 architecture: {{$arch}}

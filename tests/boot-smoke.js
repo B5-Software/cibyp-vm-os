@@ -411,6 +411,20 @@ async function main() {
   const info = probe('cibyp-vmos-info | head -3');
   checks.assert('cibyp-vmos-info 可用', info.code === 0 && info.out.includes('CIBYP-VM-OS'), info.out + info.err);
 
+  const codeossCommit = require('../recipes/overlay/codeoss/runtime-lock.json').commit;
+  const codeoss = probe(`cibyp-codeoss-server --cibyp-start ${codeossCommit} ${'1'.repeat(64)}`);
+  let remote;
+  try { remote = JSON.parse(codeoss.out); } catch { /* Record the actual boot failure below. */ }
+  checks.assert('Code-OSS 完整远程服务可启动且版本匹配', codeoss.code === 0 && remote?.commit === codeossCommit && Number.isInteger(remote?.port), codeoss.err);
+  if (remote?.port) {
+    const privateServer = probe(`ss -ltn | grep -F '127.0.0.1:${remote.port}'`);
+    checks.assert('Code-OSS 服务仅监听 loopback', privateServer.code === 0, privateServer.out + privateServer.err);
+    const reconnect = probe(`cibyp-codeoss-server --cibyp-start ${codeossCommit} ${'2'.repeat(64)}`);
+    checks.assert('Code-OSS 重连复用进程与认证令牌', reconnect.code === 0 && reconnect.out === codeoss.out, reconnect.err);
+    const mismatch = probe(`cibyp-codeoss-server --cibyp-start ${'0'.repeat(40)} ${'3'.repeat(64)}`);
+    checks.assert('Code-OSS 拒绝不匹配的工作台', mismatch.code !== 0, mismatch.err);
+  }
+
   const pwdAuth = probe("sudo sshd -T 2>/dev/null | grep -E '^passwordauthentication' || grep -i '^PasswordAuthentication' /etc/ssh/sshd_config.d/*.conf");
   checks.assert('sshd 关闭密码认证', /no/i.test(pwdAuth.out), pwdAuth.out);
 

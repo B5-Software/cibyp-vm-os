@@ -11,7 +11,7 @@
 #   version       CIBYP-VM-OS 版本号
 
 {{- $arch := or .architecture "amd64" }}
-{{- $version := or .version "0.3.1" }}
+{{- $version := or .version "0.4.0" }}
 
 architecture: {{$arch}}
 
@@ -113,3 +113,8 @@ actions:
     chroot: true
     label: CIBYP 出厂配置
     command: env CIBYP_VERSION={{$version}} bash /opt/cibyp-overlay/setup.sh
+
+  - action: run
+    chroot: true
+    label: Code-OSS 完整远程扩展宿主
+    command: bash /opt/cibyp-overlay/codeoss/install.sh

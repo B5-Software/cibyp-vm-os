@@ -71,6 +71,11 @@ function main() {
     channel: args.channel,
     builtAt: new Date().toISOString(),
     base: 'Debian GNU/Linux 13 (trixie)',
+    codeoss: {
+      version: require('../recipes/overlay/codeoss/runtime-lock.json').version,
+      commit: require('../recipes/overlay/codeoss/runtime-lock.json').commit,
+      kind: 'remote-extension-host',
+    },
     compat: {
       minHostApp: '1.8.0',
       qemu: { min: '9.0', recommended: '11.0' },
