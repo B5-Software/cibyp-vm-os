@@ -392,6 +392,10 @@ async function main() {
   checks.assert('cloud-init runcmd 生效（/workspace 就绪）', readyFile.code === 0, readyFile.err);
 
   const probe = (cmd) => sshRun(key, r1.sshPort, knownHosts, cmd, 60000);
+  const trust = probe("dpkg --compare-versions \"$(dpkg-query -W ca-certificates | awk '{print $2}')\" ge '20250419+deb13u1' && test -s /usr/share/cibyp-vmos/packages.tsv && echo ok");
+  checks.assert('Security trust baseline and installed package inventory', trust.code === 0 && trust.out === 'ok', trust.err);
+  const updates = probe('systemctl is-enabled apt-daily-upgrade.timer');
+  checks.assert('Automatic Debian security updates enabled', updates.out === 'enabled', updates.out + updates.err);
   const osr = probe(". /etc/os-release && echo \"$ID|$ID_LIKE|$VERSION_ID\"");
   checks.assert('os-release 品牌（ID=cibyp-vmos, ID_LIKE=debian）',
     osr.code === 0 && /^cibyp-vmos\|debian\|/.test(osr.out), osr.out);

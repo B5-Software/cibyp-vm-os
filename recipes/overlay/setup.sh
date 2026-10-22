@@ -231,11 +231,15 @@ APT::Install-Recommends "false";
 EOF
 cat > /etc/apt/apt.conf.d/50unattended-upgrades-cibyp <<'EOF'
 Unattended-Upgrade::Origins-Pattern {
-        "origin=Debian,codename=${distro_codename},label=Debian-Security";
+        "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
 };
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 EOF
 systemctl enable unattended-upgrades.service >/dev/null 2>&1 || true
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
 systemctl enable apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
 
 # zram：小内存实例编译/装包时缓冲
@@ -258,7 +262,8 @@ systemctl mask systemd-networkd-wait-online.service >/dev/null 2>&1 || true
 systemctl mask NetworkManager-wait-online.service >/dev/null 2>&1 || true
 # 不需要的定时任务（减少首启与运行期抖动）
 systemctl disable e2scrub_reap.service >/dev/null 2>&1 || true
-systemctl disable apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+# Keep Debian's randomized security update timers enabled. Disabling them here
+# silently undid the maintenance policy installed above.
 
 # ---------------------------------------------------------------- 出厂干净化
 : > /etc/machine-id

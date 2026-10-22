@@ -19,6 +19,11 @@
 architecture: {{$arch}}
 
 actions:
+  - action: run
+    chroot: true
+    label: Verify security trust baseline
+    command: sh /opt/cibyp-overlay/verify-security.sh
+
   # 收尾（必须在所有 apt 之后）：体积清理 + 出厂干净化
   - action: run
     chroot: true

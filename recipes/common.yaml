@@ -31,6 +31,19 @@ actions:
       mkdir -p /etc/apt/apt.conf.d
       printf 'Acquire::Retries "8";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99-cibyp-retries
 
+  # debootstrap only adds the base suite. Install security updates from the
+  # signed Debian archive before selecting any packages, including trust roots.
+  - action: run
+    chroot: true
+    description: Enable Debian security and stable updates
+    command: |
+      # minbase may not contain CA roots yet. APT verifies signed metadata and
+      # package digests independently of HTTPS during this bootstrap.
+      printf 'Types: deb\nURIs: http://security.debian.org/debian-security\nSuites: trixie-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' > /etc/apt/sources.list.d/cibyp-security.sources
+      printf 'deb http://deb.debian.org/debian trixie-updates main\n' > /etc/apt/sources.list.d/cibyp-updates.list
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends
+
   # ---- 系统底座（与发行版无关的通用工具） ----
   - action: apt
     update: true
